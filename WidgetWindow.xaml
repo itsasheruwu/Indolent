@@ -4,167 +4,142 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    xmlns:muxc="using:Microsoft.UI.Xaml.Controls"
     mc:Ignorable="d">
     <Grid
         x:Name="RootGrid"
-        Width="420"
-        Height="112"
-        Background="Transparent"
-        PointerEntered="OnRootPointerEntered"
-        PointerExited="OnRootPointerExited"
-        PointerPressed="OnRootPointerPressed">
+        Background="{StaticResource WidgetBackgroundBrush}">
         <Grid.Resources>
-            <TransitionCollection x:Key="FadeTransitions">
-                <EntranceThemeTransition />
-            </TransitionCollection>
-            <Storyboard x:Key="ThinkingSweepStoryboard" RepeatBehavior="Forever">
+            <!-- Minimal opacity fade for thinking state -->
+            <Storyboard x:Key="ThinkingRevealStoryboard">
                 <DoubleAnimation
-                    Storyboard.TargetName="ThinkingSweepTransform"
-                    Storyboard.TargetProperty="X"
-                    Duration="0:0:2.6"
-                    From="-140"
-                    To="264" />
+                    Storyboard.TargetName="ThinkingTextPresenter"
+                    Storyboard.TargetProperty="Opacity"
+                    Duration="0:0:0.25"
+                    From="0"
+                    To="1" />
+            </Storyboard>
+            <Storyboard x:Key="MessageRevealStoryboard">
+                <DoubleAnimation
+                    Storyboard.TargetName="MessageTextBlock"
+                    Storyboard.TargetProperty="Opacity"
+                    Duration="0:0:0.25"
+                    From="0"
+                    To="1" />
+            </Storyboard>
+            <Storyboard x:Key="ActionButtonRevealStoryboard">
+                <DoubleAnimation
+                    Storyboard.TargetName="AnswerButton"
+                    Storyboard.TargetProperty="Opacity"
+                    Duration="0:0:0.25"
+                    From="0"
+                    To="1" />
+            </Storyboard>
+            <Storyboard x:Key="SubtleBorderGlowStoryboard" RepeatBehavior="Forever" AutoReverse="True">
+                <DoubleAnimation
+                    Storyboard.TargetName="ActiveHighlightBorder"
+                    Storyboard.TargetProperty="Opacity"
+                    Duration="0:0:1.5"
+                    From="0.2"
+                    To="1.0">
+                    <DoubleAnimation.EasingFunction>
+                        <SineEase EasingMode="EaseInOut" />
+                    </DoubleAnimation.EasingFunction>
+                </DoubleAnimation>
             </Storyboard>
         </Grid.Resources>
 
-        <Grid.Transitions>
-            <StaticResource ResourceKey="FadeTransitions" />
-        </Grid.Transitions>
-
         <Border
-            Background="{StaticResource WidgetOuterGlowBrush}"
-            CornerRadius="56"
-            Opacity="0.9" />
+            x:Name="WidgetSurface"
+            HorizontalAlignment="Stretch"
+            VerticalAlignment="Stretch"
+            PointerEntered="OnSurfacePointerEntered"
+            PointerExited="OnSurfacePointerExited">
+            
+            <Grid x:Name="SurfaceGrid">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="38" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
 
-        <Border
-            Margin="1.5"
-            BorderBrush="{StaticResource WidgetStrokeBrush}"
-            BorderThickness="1.1"
-            CornerRadius="54.5"
-            Opacity="0.95" />
-
-        <Border
-            Margin="4"
-            Background="{StaticResource WidgetBodyBrush}"
-            BorderBrush="{StaticResource WidgetStrokeBrush}"
-            BorderThickness="1"
-            CornerRadius="52">
-            <Grid>
-                <Border
-                    Margin="11,9,11,50"
-                    Background="{StaticResource WidgetHighlightBrush}"
-                    CornerRadius="42"
-                    Height="20"
-                    Opacity="0.36"
-                    VerticalAlignment="Top" />
-
-                <Border
-                    Margin="20,14,20,18"
-                    Background="{StaticResource WidgetInnerSheenBrush}"
-                    CornerRadius="44"
-                    Opacity="0.14" />
-
-                <Border
-                    Margin="88,18,88,26"
-                    Background="{StaticResource WidgetCenterGlowBrush}"
-                    CornerRadius="40"
-                    Opacity="0.22" />
-
-                <Ellipse
-                    Fill="{StaticResource WidgetTopSpecBrush}"
-                    Width="94"
-                    Height="28"
-                    HorizontalAlignment="Left"
-                    IsHitTestVisible="False"
-                    Margin="34,16,0,0"
-                    Opacity="0.5"
-                    VerticalAlignment="Top" />
-
-                <Ellipse
-                    Fill="{StaticResource WidgetTopSpecBrush}"
-                    Width="98"
-                    Height="30"
-                    HorizontalAlignment="Right"
-                    IsHitTestVisible="False"
-                    Margin="0,15,34,0"
-                    Opacity="0.54"
-                    VerticalAlignment="Top" />
-
-                <Grid Margin="34,0">
-                    <Grid
-                        x:Name="ThinkingTextPresenter"
-                        HorizontalAlignment="Center"
-                        Margin="0,4,0,0"
-                        MaxWidth="258"
-                        VerticalAlignment="Center"
-                        Visibility="Collapsed">
-                        <TextBlock
-                            Foreground="{StaticResource WidgetThinkingBaseTextBrush}"
-                            HorizontalAlignment="Center"
-                            MaxWidth="258"
-                            Style="{StaticResource WidgetThinkingTextStyle}"
-                            Text="{x:Bind ViewModel.MessageText, Mode=OneWay}"
-                            TextAlignment="Center"
-                            TextWrapping="NoWrap" />
-
-                        <TextBlock
-                            Foreground="{StaticResource WidgetThinkingSweepTextBrush}"
-                            HorizontalAlignment="Center"
-                            IsHitTestVisible="False"
-                            MaxWidth="258"
-                            Opacity="0.52"
-                            Style="{StaticResource WidgetThinkingTextStyle}"
-                            Text="{x:Bind ViewModel.MessageText, Mode=OneWay}"
-                            TextAlignment="Center"
-                            TextWrapping="NoWrap">
-                            <TextBlock.Clip>
-                                <RectangleGeometry Rect="0,0,92,64">
-                                    <RectangleGeometry.Transform>
-                                        <TranslateTransform x:Name="ThinkingSweepTransform" X="-140" />
-                                    </RectangleGeometry.Transform>
-                                </RectangleGeometry>
-                            </TextBlock.Clip>
-                        </TextBlock>
-                    </Grid>
-
-                    <TextBlock
-                        x:Name="MessageTextBlock"
-                        HorizontalAlignment="Center"
-                        Margin="0,7,0,0"
-                        MaxWidth="236"
-                        Style="{StaticResource WidgetResultTextStyle}"
-                        Text="{x:Bind ViewModel.MessageText, Mode=OneWay}"
-                        TextAlignment="Center"
-                        TextTrimming="CharacterEllipsis"
-                        TextWrapping="WrapWholeWords"
-                        VerticalAlignment="Center"
-                        Visibility="Collapsed" />
-
-                    <Button
-                        x:Name="AnswerButton"
-                        Click="OnAnswerClicked"
-                        Content="Answer"
-                        HorizontalAlignment="Center"
-                        Style="{StaticResource WidgetAnswerButtonStyle}"
-                        VerticalAlignment="Center"
-                        Visibility="Collapsed" />
+                <!-- Drag Handle -->
+                <Grid
+                    x:Name="DragHandleArea"
+                    Grid.Column="0"
+                    Background="Transparent"
+                    PointerMoved="OnDragAreaPointerMoved"
+                    PointerPressed="OnDragAreaPointerPressed"
+                    PointerReleased="OnDragAreaPointerReleased">
+                    <!-- Subtle grip lines -->
+                    <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="3">
+                        <Border Width="12" Height="2" CornerRadius="1" Background="{StaticResource WidgetDragHandleBrush}" />
+                        <Border Width="12" Height="2" CornerRadius="1" Background="{StaticResource WidgetDragHandleBrush}" />
+                        <Border Width="12" Height="2" CornerRadius="1" Background="{StaticResource WidgetDragHandleBrush}" />
+                    </StackPanel>
                 </Grid>
 
+                <!-- Separator -->
                 <Border
-                    Margin="104,0,104,12"
-                    Background="{StaticResource WidgetBottomGlowBrush}"
-                    CornerRadius="6"
-                    Height="8"
-                    Opacity="0.56"
-                    VerticalAlignment="Bottom" />
+                    Grid.Column="0"
+                    Width="1"
+                    HorizontalAlignment="Right"
+                    VerticalAlignment="Stretch"
+                    Margin="0,16,0,16"
+                    Background="{StaticResource WidgetDragHandleBrush}" />
 
+                <!-- Content Area -->
+                <Grid
+                    x:Name="ContentArea"
+                    Grid.Column="1"
+                    Background="Transparent"
+                    PointerPressed="OnContentAreaPointerPressed"
+                    PointerReleased="OnContentAreaPointerReleased">
+                    
+                    <Grid Margin="20,10,20,10">
+                        <Grid
+                            x:Name="ThinkingTextPresenter"
+                            HorizontalAlignment="Left"
+                            VerticalAlignment="Center"
+                            Opacity="0"
+                            Visibility="Collapsed">
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <muxc:ProgressRing Width="16" Height="16" Foreground="{StaticResource WidgetThinkingTextBrush}" IsActive="{x:Bind ViewModel.IsBusy, Mode=OneWay}" />
+                                <TextBlock
+                                    Style="{StaticResource WidgetThinkingTextStyle}"
+                                    Text="{x:Bind ViewModel.MessageText, Mode=OneWay}" />
+                            </StackPanel>
+                        </Grid>
+
+                        <TextBlock
+                            x:Name="MessageTextBlock"
+                            HorizontalAlignment="Left"
+                            VerticalAlignment="Center"
+                            Opacity="0"
+                            Style="{StaticResource WidgetResultTextStyle}"
+                            Text="{x:Bind ViewModel.MessageText, Mode=OneWay}"
+                            Visibility="Collapsed" />
+
+                        <Button
+                            x:Name="AnswerButton"
+                            Content="Answer"
+                            HorizontalAlignment="Left"
+                            VerticalAlignment="Center"
+                            Opacity="0"
+                            Style="{StaticResource WidgetAnswerButtonStyle}"
+                            Visibility="Collapsed" />
+                    </Grid>
+                </Grid>
+
+                <!-- Active Glow Line (bottom) -->
                 <Border
-                    Margin="68,0,68,13"
-                    Background="{StaticResource WidgetBottomLineBrush}"
-                    CornerRadius="1"
-                    Height="1"
-                    Opacity="0.74"
-                    VerticalAlignment="Bottom" />
+                    x:Name="ActiveHighlightBorder"
+                    Grid.Column="0"
+                    Grid.ColumnSpan="2"
+                    Height="2"
+                    VerticalAlignment="Bottom"
+                    Background="{StaticResource WidgetActiveHighlightBrush}"
+                    Opacity="0"
+                    Visibility="Collapsed" />
             </Grid>
         </Border>
     </Grid>

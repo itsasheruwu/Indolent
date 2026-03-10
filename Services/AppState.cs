@@ -99,7 +99,7 @@ public sealed class AppState : ObservableObject
             settings.SelectedReasoningEffort,
             settings.LastSuccessfulReasoningEffort,
             configuredReasoningEffort,
-            "medium");
+            "low");
 
         SelectedModel = initialModel;
         SelectedReasoningEffort = initialReasoningEffort;

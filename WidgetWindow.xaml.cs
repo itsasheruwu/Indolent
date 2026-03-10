@@ -12,7 +12,7 @@ public sealed partial class WidgetWindow : Window
 {
     private const string OcrAnswerPrompt = "Answer the user's question from this OCR text. OCR may contain noise. If it is multiple choice, return the best option first, then a short reason on the same line. Keep it brief.";
     private const string ScreenshotAnswerPrompt = "Answer the visible question from this screenshot. Use the image as the source of truth, and use any OCR text only as a hint. If it is multiple choice, return the best option first, then a short reason on the same line. Keep it brief.";
-    private const double ThinkingSweepStartX = -140d;
+    private const double DragThreshold = 3d;
 
     private readonly AppState appState;
     private readonly ICodexCliService codexCliService;
@@ -21,7 +21,17 @@ public sealed partial class WidgetWindow : Window
     private readonly ISettingsStore settingsStore;
 
     private AppWindow? appWindow;
-    private bool isThinkingAnimationActive;
+    private bool wasShowingThinkingText;
+    private bool wasShowingMessageText;
+    private bool wasShowingActionButton;
+
+    // Drag tracking
+    private bool isDragPointerDown;
+    private Windows.Foundation.Point dragPressedPosition;
+    private uint dragPointerId;
+
+    // Content tracking
+    private bool isContentPointerDown;
 
     public WidgetWindow(WidgetWindowViewModel viewModel)
     {
@@ -33,12 +43,11 @@ public sealed partial class WidgetWindow : Window
         ocrService = App.CurrentApp.Host.Services.GetRequiredService<IOcrService>();
         screenCaptureService = App.CurrentApp.Host.Services.GetRequiredService<IScreenCaptureService>();
         settingsStore = App.CurrentApp.Host.Services.GetRequiredService<ISettingsStore>();
-        ToolTipService.SetToolTip(RootGrid, ViewModel.TooltipText);
+
         ViewModel.PropertyChanged += (_, e) =>
         {
             if (e.PropertyName is nameof(ViewModel.ShowActionButton)
                 or nameof(ViewModel.ShowMessage)
-                or nameof(ViewModel.TooltipText)
                 or nameof(ViewModel.IsBusy))
             {
                 UpdateVisualState();
@@ -48,14 +57,31 @@ public sealed partial class WidgetWindow : Window
 
     public WidgetWindowViewModel ViewModel { get; }
 
-    private Storyboard ThinkingSweepStoryboard
-        => (Storyboard)RootGrid.Resources["ThinkingSweepStoryboard"];
+    private Storyboard MessageRevealStoryboard
+        => (Storyboard)RootGrid.Resources["MessageRevealStoryboard"];
+
+    private Storyboard ThinkingRevealStoryboard
+        => (Storyboard)RootGrid.Resources["ThinkingRevealStoryboard"];
+
+    private Storyboard ActionButtonRevealStoryboard
+        => (Storyboard)RootGrid.Resources["ActionButtonRevealStoryboard"];
+
+    private Storyboard SubtleBorderGlowStoryboard
+        => (Storyboard)RootGrid.Resources["SubtleBorderGlowStoryboard"];
 
     public void InitializeWindow()
     {
         appWindow = this.GetAppWindow();
         appWindow.Title = "Indolent Widget";
-        appWindow.Resize(new Windows.Graphics.SizeInt32((int)appState.WidgetBounds.Width, (int)appState.WidgetBounds.Height));
+        
+        var hWnd = this.GetWindowHandle();
+        var dpi = NativeMethods.GetDpiForWindow(hWnd);
+        var scale = dpi == 0 ? 1.0 : dpi / 96.0;
+        
+        var physicalWidth = (int)Math.Round(368 * scale);
+        var physicalHeight = (int)Math.Round(72 * scale);
+
+        appWindow.Resize(new Windows.Graphics.SizeInt32(physicalWidth, physicalHeight));
         appWindow.Move(new Windows.Graphics.PointInt32((int)appState.WidgetBounds.X, (int)appState.WidgetBounds.Y));
         appWindow.Changed += OnAppWindowChanged;
         appWindow.Closing += OnAppWindowClosing;
@@ -69,12 +95,12 @@ public sealed partial class WidgetWindow : Window
             presenter.SetBorderAndTitleBar(false, false);
         }
 
-        var hWnd = this.GetWindowHandle();
+        hWnd = this.GetWindowHandle();
         var extendedStyle = NativeMethods.GetWindowLong(hWnd, NativeMethods.GwlExStyle);
         extendedStyle |= NativeMethods.WsExToolWindow;
         extendedStyle &= ~NativeMethods.WsExAppWindow;
         NativeMethods.SetWindowLong(hWnd, NativeMethods.GwlExStyle, extendedStyle);
-        ApplyRoundedRegion();
+        
         NativeMethods.SetWindowPos(
             hWnd,
             NativeMethods.HwndTopmost,
@@ -83,8 +109,16 @@ public sealed partial class WidgetWindow : Window
             0,
             0,
             NativeMethods.SwpNomove | NativeMethods.SwpNosize | NativeMethods.SwpNoActivate | NativeMethods.SwpFrameChanged);
+
+        // Kill the Windows 11 DWM accent border
+        var borderColorNone = unchecked((int)NativeMethods.DwmwaColorNone);
+        NativeMethods.DwmSetWindowAttribute(hWnd, NativeMethods.DwmwaBorderColor, ref borderColorNone, sizeof(int));
+
+        // Extend glass frame into client area to fully eliminate non-client frame
+        var margins = new NativeMethods.Margins { Left = -1, Right = -1, Top = -1, Bottom = -1 };
+        NativeMethods.DwmExtendFrameIntoClientArea(hWnd, ref margins);
+        
         SizeChanged += OnSizeChanged;
-        Activated += (_, _) => ApplyRoundedRegion();
         UpdateVisualState();
     }
 
@@ -107,7 +141,7 @@ public sealed partial class WidgetWindow : Window
             NativeMethods.SwpNomove | NativeMethods.SwpNosize | NativeMethods.SwpNoActivate);
     }
 
-    private async void OnAnswerClicked(object sender, RoutedEventArgs e)
+    private async Task TriggerAnswerAsync()
     {
         if (!appState.CanAnswer)
         {
@@ -222,27 +256,99 @@ public sealed partial class WidgetWindow : Window
             || text.Contains("not enough context", StringComparison.OrdinalIgnoreCase);
     }
 
-    private void OnRootPointerEntered(object sender, PointerRoutedEventArgs e)
+    private void OnSurfacePointerEntered(object sender, PointerRoutedEventArgs e)
     {
         ViewModel.SetHovered(true);
         UpdateVisualState();
+
+        if (ViewModel.IsBusy)
+        {
+            PlayThinkingReveal();
+            return;
+        }
+
+        if (ViewModel.ShowMessage)
+        {
+            PlayMessageReveal();
+            return;
+        }
+
+        if (ViewModel.ShowActionButton)
+        {
+            PlayActionButtonReveal();
+        }
     }
 
-    private void OnRootPointerExited(object sender, PointerRoutedEventArgs e)
+    private void OnSurfacePointerExited(object sender, PointerRoutedEventArgs e)
     {
         ViewModel.SetHovered(false);
         UpdateVisualState();
     }
 
-    private void OnRootPointerPressed(object sender, PointerRoutedEventArgs e)
+    private void OnDragAreaPointerPressed(object sender, PointerRoutedEventArgs e)
     {
-        if (ViewModel.IsBusy || e.OriginalSource is Button)
-        {
-            return;
-        }
+        var pointer = e.GetCurrentPoint(DragHandleArea);
+        if (!pointer.Properties.IsLeftButtonPressed) return;
 
+        DragHandleArea.CapturePointer(e.Pointer);
+        isDragPointerDown = true;
+        dragPointerId = e.Pointer.PointerId;
+        dragPressedPosition = pointer.Position;
+        e.Handled = true;
+    }
+
+    private void OnDragAreaPointerMoved(object sender, PointerRoutedEventArgs e)
+    {
+        if (!isDragPointerDown || e.Pointer.PointerId != dragPointerId) return;
+
+        var currentPosition = e.GetCurrentPoint(DragHandleArea).Position;
+        var deltaX = currentPosition.X - dragPressedPosition.X;
+        var deltaY = currentPosition.Y - dragPressedPosition.Y;
+        var distanceSquared = (deltaX * deltaX) + (deltaY * deltaY);
+
+        if (distanceSquared > DragThreshold * DragThreshold)
+        {
+            DragHandleArea.ReleasePointerCaptures();
+            isDragPointerDown = false;
+            BeginWindowDrag();
+        }
+        e.Handled = true;
+    }
+
+    private void OnDragAreaPointerReleased(object sender, PointerRoutedEventArgs e)
+    {
+        if (!isDragPointerDown || e.Pointer.PointerId != dragPointerId) return;
+
+        DragHandleArea.ReleasePointerCaptures();
+        isDragPointerDown = false;
+        e.Handled = true;
+    }
+
+    private void BeginWindowDrag()
+    {
         NativeMethods.ReleaseCapture();
         NativeMethods.SendMessage(this.GetWindowHandle(), NativeMethods.WmNclButtonDown, (IntPtr)NativeMethods.HtCaption, IntPtr.Zero);
+    }
+
+    private void OnContentAreaPointerPressed(object sender, PointerRoutedEventArgs e)
+    {
+        var pointer = e.GetCurrentPoint(ContentArea);
+        if (!pointer.Properties.IsLeftButtonPressed) return;
+
+        isContentPointerDown = true;
+        e.Handled = true;
+    }
+
+    private async void OnContentAreaPointerReleased(object sender, PointerRoutedEventArgs e)
+    {
+        if (!isContentPointerDown) return;
+        isContentPointerDown = false;
+
+        if (ViewModel.ShowActionButton && !ViewModel.IsBusy)
+        {
+            e.Handled = true;
+            await TriggerAnswerAsync();
+        }
     }
 
     private async void OnAppWindowClosing(AppWindow sender, AppWindowClosingEventArgs args)
@@ -259,8 +365,6 @@ public sealed partial class WidgetWindow : Window
 
     private async void OnSizeChanged(object sender, WindowSizeChangedEventArgs args)
     {
-        ApplyRoundedRegion();
-
         var position = appWindow?.Position ?? new Windows.Graphics.PointInt32((int)appState.WidgetBounds.X, (int)appState.WidgetBounds.Y);
         appState.UpdateWidgetBounds(position.X, position.Y, args.Size.Width, args.Size.Height);
         await appState.PersistAsync(settingsStore);
@@ -279,50 +383,98 @@ public sealed partial class WidgetWindow : Window
         await appState.PersistAsync(settingsStore);
     }
 
-    private void ApplyRoundedRegion()
-    {
-        var region = NativeMethods.CreateRoundRectRgn(0, 0, (int)RootGrid.Width, (int)RootGrid.Height, 112, 112);
-        NativeMethods.SetWindowRgn(this.GetWindowHandle(), region, true);
-    }
-
     private void UpdateVisualState()
     {
         var isThinking = ViewModel.IsBusy;
+        var showMessage = ViewModel.ShowMessage && !isThinking;
+        var showActionButton = ViewModel.ShowActionButton;
 
-        AnswerButton.Visibility = ViewModel.ShowActionButton ? Visibility.Visible : Visibility.Collapsed;
+        AnswerButton.Visibility = showActionButton ? Visibility.Visible : Visibility.Collapsed;
         ThinkingTextPresenter.Visibility = isThinking ? Visibility.Visible : Visibility.Collapsed;
-        MessageTextBlock.Visibility = ViewModel.ShowMessage && !isThinking ? Visibility.Visible : Visibility.Collapsed;
+        MessageTextBlock.Visibility = showMessage ? Visibility.Visible : Visibility.Collapsed;
         MessageTextBlock.Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources[
             ViewModel.IsError ? "WidgetErrorTextBrush" : "WidgetTextBrush"];
+        
         UpdateThinkingAnimation(isThinking);
-        ToolTipService.SetToolTip(RootGrid, ViewModel.TooltipText);
+        UpdateThinkingReveal(isThinking);
+        UpdateMessageReveal(showMessage);
+        UpdateActionButtonReveal(showActionButton);
     }
 
     private void UpdateThinkingAnimation(bool isThinking)
     {
         if (isThinking)
         {
-            if (isThinkingAnimationActive)
-            {
-                return;
-            }
-
-            ResetThinkingSweep();
-            ThinkingSweepStoryboard.Begin();
-            isThinkingAnimationActive = true;
-            return;
+            ActiveHighlightBorder.Visibility = Visibility.Visible;
+            SubtleBorderGlowStoryboard.Begin();
         }
-
-        if (!isThinkingAnimationActive)
+        else
         {
-            return;
+            SubtleBorderGlowStoryboard.Stop();
+            ActiveHighlightBorder.Visibility = Visibility.Collapsed;
         }
-
-        ThinkingSweepStoryboard.Stop();
-        ResetThinkingSweep();
-        isThinkingAnimationActive = false;
     }
 
-    private void ResetThinkingSweep()
-        => ThinkingSweepTransform.X = ThinkingSweepStartX;
+    private void UpdateThinkingReveal(bool isThinking)
+    {
+        if (isThinking)
+        {
+            if (!wasShowingThinkingText) PlayThinkingReveal();
+        }
+        else
+        {
+            ThinkingRevealStoryboard.Stop();
+            ThinkingTextPresenter.Opacity = 0;
+        }
+        wasShowingThinkingText = isThinking;
+    }
+
+    private void UpdateMessageReveal(bool showMessage)
+    {
+        if (showMessage)
+        {
+            if (!wasShowingMessageText) PlayMessageReveal();
+        }
+        else
+        {
+            MessageRevealStoryboard.Stop();
+            MessageTextBlock.Opacity = 0;
+        }
+        wasShowingMessageText = showMessage;
+    }
+
+    private void UpdateActionButtonReveal(bool showActionButton)
+    {
+        if (showActionButton)
+        {
+            if (!wasShowingActionButton) PlayActionButtonReveal();
+        }
+        else
+        {
+            ActionButtonRevealStoryboard.Stop();
+            AnswerButton.Opacity = 0;
+        }
+        wasShowingActionButton = showActionButton;
+    }
+
+    private void PlayThinkingReveal()
+    {
+        ThinkingRevealStoryboard.Stop();
+        ThinkingTextPresenter.Opacity = 0;
+        ThinkingRevealStoryboard.Begin();
+    }
+
+    private void PlayMessageReveal()
+    {
+        MessageRevealStoryboard.Stop();
+        MessageTextBlock.Opacity = 0;
+        MessageRevealStoryboard.Begin();
+    }
+
+    private void PlayActionButtonReveal()
+    {
+        ActionButtonRevealStoryboard.Stop();
+        AnswerButton.Opacity = 0;
+        ActionButtonRevealStoryboard.Begin();
+    }
 }

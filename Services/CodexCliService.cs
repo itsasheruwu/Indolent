@@ -246,8 +246,9 @@ public sealed partial class CodexCliService(ILogger<CodexCliService> logger) : I
     {
         try
         {
-            await process.StandardInput.WriteAsync(standardInput);
-            await process.StandardInput.FlushAsync();
+            await using var writer = new StreamWriter(process.StandardInput.BaseStream, new UTF8Encoding(false), 1024, leaveOpen: true);
+            await writer.WriteAsync(standardInput);
+            await writer.FlushAsync();
         }
         catch
         {
