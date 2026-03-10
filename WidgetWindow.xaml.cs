@@ -3,6 +3,7 @@ using Indolent.Services;
 
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.UI.Windowing;
+using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Animation;
 using Microsoft.UI.Xaml.Input;
 
@@ -68,6 +69,9 @@ public sealed partial class WidgetWindow : Window
 
     private Storyboard SubtleBorderGlowStoryboard
         => (Storyboard)RootGrid.Resources["SubtleBorderGlowStoryboard"];
+
+    private Storyboard ThinkingTextShimmerStoryboard
+        => (Storyboard)RootGrid.Resources["ThinkingTextShimmerStoryboard"];
 
     public void InitializeWindow()
     {
@@ -344,11 +348,26 @@ public sealed partial class WidgetWindow : Window
         if (!isContentPointerDown) return;
         isContentPointerDown = false;
 
+        if (IsWithinAnswerButton(e.OriginalSource))
+        {
+            return;
+        }
+
         if (ViewModel.ShowActionButton && !ViewModel.IsBusy)
         {
             e.Handled = true;
             await TriggerAnswerAsync();
         }
+    }
+
+    private async void OnAnswerButtonClicked(object sender, RoutedEventArgs e)
+    {
+        if (ViewModel.IsBusy)
+        {
+            return;
+        }
+
+        await TriggerAnswerAsync();
     }
 
     private async void OnAppWindowClosing(AppWindow sender, AppWindowClosingEventArgs args)
@@ -407,10 +426,13 @@ public sealed partial class WidgetWindow : Window
         {
             ActiveHighlightBorder.Visibility = Visibility.Visible;
             SubtleBorderGlowStoryboard.Begin();
+            ThinkingTextShimmerStoryboard.Begin();
         }
         else
         {
             SubtleBorderGlowStoryboard.Stop();
+            ThinkingTextShimmerStoryboard.Stop();
+            ThinkingTextShimmerTransform.X = -1.25;
             ActiveHighlightBorder.Visibility = Visibility.Collapsed;
         }
     }
@@ -476,5 +498,18 @@ public sealed partial class WidgetWindow : Window
         ActionButtonRevealStoryboard.Stop();
         AnswerButton.Opacity = 0;
         ActionButtonRevealStoryboard.Begin();
+    }
+
+    private static bool IsWithinAnswerButton(object? source)
+    {
+        for (var current = source as DependencyObject; current is not null; current = VisualTreeHelper.GetParent(current))
+        {
+            if (current is Button button && button.Name == "AnswerButton")
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

@@ -47,6 +47,18 @@
                     </DoubleAnimation.EasingFunction>
                 </DoubleAnimation>
             </Storyboard>
+            <Storyboard x:Key="ThinkingTextShimmerStoryboard" RepeatBehavior="Forever">
+                <DoubleAnimation
+                    Storyboard.TargetName="ThinkingTextShimmerTransform"
+                    Storyboard.TargetProperty="X"
+                    Duration="0:0:2.4"
+                    From="-1.25"
+                    To="1.25">
+                    <DoubleAnimation.EasingFunction>
+                        <SineEase EasingMode="EaseInOut" />
+                    </DoubleAnimation.EasingFunction>
+                </DoubleAnimation>
+            </Storyboard>
         </Grid.Resources>
 
         <Border
@@ -105,8 +117,24 @@
                             <StackPanel Orientation="Horizontal" Spacing="8">
                                 <muxc:ProgressRing Width="16" Height="16" Foreground="{StaticResource WidgetThinkingTextBrush}" IsActive="{x:Bind ViewModel.IsBusy, Mode=OneWay}" />
                                 <TextBlock
+                                    x:Name="ThinkingTextBlock"
                                     Style="{StaticResource WidgetThinkingTextStyle}"
-                                    Text="{x:Bind ViewModel.MessageText, Mode=OneWay}" />
+                                    Text="{x:Bind ViewModel.MessageText, Mode=OneWay}">
+                                    <TextBlock.Foreground>
+                                        <LinearGradientBrush StartPoint="0,0.5" EndPoint="1,0.5">
+                                            <LinearGradientBrush.RelativeTransform>
+                                                <TranslateTransform
+                                                    x:Name="ThinkingTextShimmerTransform"
+                                                    X="-1.25" />
+                                            </LinearGradientBrush.RelativeTransform>
+                                            <GradientStop Color="#8CFFFFFF" Offset="0" />
+                                            <GradientStop Color="#8CFFFFFF" Offset="0.34" />
+                                            <GradientStop Color="#F2FFFFFF" Offset="0.5" />
+                                            <GradientStop Color="#8CFFFFFF" Offset="0.66" />
+                                            <GradientStop Color="#8CFFFFFF" Offset="1" />
+                                        </LinearGradientBrush>
+                                    </TextBlock.Foreground>
+                                </TextBlock>
                             </StackPanel>
                         </Grid>
 
@@ -121,6 +149,7 @@
 
                         <Button
                             x:Name="AnswerButton"
+                            Click="OnAnswerButtonClicked"
                             Content="Answer"
                             HorizontalAlignment="Left"
                             VerticalAlignment="Center"
