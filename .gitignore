@@ -1,0 +1,45 @@
+# Build outputs
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+ARM64/
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Rider / VS Code
+.idea/
+.vscode/
+
+# NuGet
+packages/
+*.nupkg
+
+# Publish artifacts
+AppPackages/
+BundleArtifacts/
+TestResults/
+PublishProfiles/*.pubxml.user
+
+# Generated files
+*.cache
+*.g.cs
+*.g.i.cs
+*.AssemblyInfo.cs
+*.GeneratedMSBuildEditorConfig.editorconfig
+*.FileListAbsolute.txt
+*.Up2Date
+*.xbf
+*.pri
+*.pdb
+
+# OS files
+Thumbs.db
+Desktop.ini

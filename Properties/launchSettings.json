@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "Indolent (Package)": {
+      "commandName": "MsixPackage"
+    },
+    "Indolent (Unpackaged)": {
+      "commandName": "Project"
+    }
+  }
+}

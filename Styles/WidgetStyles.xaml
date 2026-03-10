@@ -1,0 +1,107 @@
+<ResourceDictionary
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <SolidColorBrush x:Key="WidgetTextBrush" Color="#FFF2F0FF" />
+    <SolidColorBrush x:Key="WidgetThinkingBaseTextBrush" Color="#E7E0FF" />
+    <SolidColorBrush x:Key="WidgetThinkingSweepTextBrush" Color="#FFF5F5FF" />
+    <SolidColorBrush x:Key="WidgetErrorTextBrush" Color="#FFFFD0DE" />
+
+    <RadialGradientBrush x:Key="WidgetOuterGlowBrush" Center="0.5,0.5" RadiusX="0.72" RadiusY="1.02">
+        <GradientStop Color="#B7418BFF" Offset="0" />
+        <GradientStop Color="#5A3476FF" Offset="0.54" />
+        <GradientStop Color="#00304073" Offset="1" />
+    </RadialGradientBrush>
+
+    <LinearGradientBrush x:Key="WidgetBodyBrush" StartPoint="0,0" EndPoint="1,1">
+        <GradientStop Color="#F1161747" Offset="0" />
+        <GradientStop Color="#EE1A1B58" Offset="0.46" />
+        <GradientStop Color="#ED090B28" Offset="1" />
+    </LinearGradientBrush>
+
+    <LinearGradientBrush x:Key="WidgetStrokeBrush" StartPoint="0,0" EndPoint="1,0">
+        <GradientStop Color="#CFC2F7FF" Offset="0" />
+        <GradientStop Color="#D97FEEFF" Offset="0.18" />
+        <GradientStop Color="#A467E6FF" Offset="0.5" />
+        <GradientStop Color="#CFC9F7FF" Offset="1" />
+    </LinearGradientBrush>
+
+    <LinearGradientBrush x:Key="WidgetHighlightBrush" StartPoint="0,0" EndPoint="0,1">
+        <GradientStop Color="#42FFFFFF" Offset="0" />
+        <GradientStop Color="#0FD8F0FF" Offset="0.45" />
+        <GradientStop Color="#00D8F0FF" Offset="1" />
+    </LinearGradientBrush>
+
+    <RadialGradientBrush x:Key="WidgetTopSpecBrush" Center="0.5,0.42" RadiusX="0.72" RadiusY="0.95">
+        <GradientStop Color="#6CFFFFFF" Offset="0" />
+        <GradientStop Color="#12D8F0FF" Offset="0.42" />
+        <GradientStop Color="#00D8F0FF" Offset="1" />
+    </RadialGradientBrush>
+
+    <LinearGradientBrush x:Key="WidgetInnerSheenBrush" StartPoint="0,0" EndPoint="1,1">
+        <GradientStop Color="#1FD8D0FF" Offset="0" />
+        <GradientStop Color="#0697A9FF" Offset="0.34" />
+        <GradientStop Color="#00FFFFFF" Offset="0.75" />
+        <GradientStop Color="#146C90FF" Offset="1" />
+    </LinearGradientBrush>
+
+    <RadialGradientBrush x:Key="WidgetCenterGlowBrush" Center="0.5,0.5" RadiusX="0.58" RadiusY="0.88">
+        <GradientStop Color="#204067C4" Offset="0" />
+        <GradientStop Color="#07385B6A" Offset="0.55" />
+        <GradientStop Color="#00000000" Offset="1" />
+    </RadialGradientBrush>
+
+    <LinearGradientBrush x:Key="WidgetBottomGlowBrush" StartPoint="0,0.5" EndPoint="1,0.5">
+        <GradientStop Color="#00E9DCFF" Offset="0" />
+        <GradientStop Color="#77B69EFF" Offset="0.5" />
+        <GradientStop Color="#00E9DCFF" Offset="1" />
+    </LinearGradientBrush>
+
+    <LinearGradientBrush x:Key="WidgetBottomLineBrush" StartPoint="0,0.5" EndPoint="1,0.5">
+        <GradientStop Color="#00C7C8FF" Offset="0" />
+        <GradientStop Color="#CC93FFFF" Offset="0.5" />
+        <GradientStop Color="#00C7C8FF" Offset="1" />
+    </LinearGradientBrush>
+
+    <Style x:Key="WidgetThinkingTextStyle" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="Segoe UI Variable Display Semib" />
+        <Setter Property="FontSize" Value="22" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="LineHeight" Value="28" />
+        <Setter Property="MaxLines" Value="1" />
+    </Style>
+
+    <Style x:Key="WidgetResultTextStyle" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="Segoe UI Variable Display Semib" />
+        <Setter Property="FontSize" Value="19" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="Foreground" Value="{StaticResource WidgetTextBrush}" />
+        <Setter Property="LineHeight" Value="24" />
+        <Setter Property="MaxLines" Value="2" />
+    </Style>
+
+    <Style x:Key="WidgetAnswerButtonStyle" TargetType="Button">
+        <Setter Property="FontFamily" Value="Segoe UI Variable Display Semib" />
+        <Setter Property="FontSize" Value="26" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="Foreground" Value="{StaticResource WidgetTextBrush}" />
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="BorderBrush" Value="Transparent" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="Padding" Value="14,2" />
+        <Setter Property="HorizontalContentAlignment" Value="Center" />
+        <Setter Property="VerticalContentAlignment" Value="Center" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <ContentPresenter
+                        Content="{TemplateBinding Content}"
+                        ContentTemplate="{TemplateBinding ContentTemplate}"
+                        Foreground="{TemplateBinding Foreground}"
+                        HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                        Padding="{TemplateBinding Padding}"
+                        VerticalAlignment="{TemplateBinding VerticalContentAlignment}" />
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+</ResourceDictionary>

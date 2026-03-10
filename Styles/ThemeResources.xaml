@@ -1,0 +1,25 @@
+<ResourceDictionary
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Color x:Key="AppAccentColor">#A688FF</Color>
+    <Color x:Key="AppSlateColor">#11131B</Color>
+    <Color x:Key="AppMutedColor">#A7AEC1</Color>
+    <Color x:Key="AppBackgroundColor">#0E1016</Color>
+    <Color x:Key="AppCardColor">#171A24</Color>
+    <Color x:Key="AppCardSecondaryColor">#121520</Color>
+    <Color x:Key="AppCardStrokeColor">#293043</Color>
+
+    <SolidColorBrush x:Key="AppAccentBrush" Color="{StaticResource AppAccentColor}" />
+    <SolidColorBrush x:Key="AppSlateBrush" Color="{StaticResource AppSlateColor}" />
+    <SolidColorBrush x:Key="AppMutedBrush" Color="{StaticResource AppMutedColor}" />
+    <SolidColorBrush x:Key="AppPageBackgroundBrush" Color="{StaticResource AppBackgroundColor}" />
+    <SolidColorBrush x:Key="AppCardBrush" Color="{StaticResource AppCardColor}" />
+    <SolidColorBrush x:Key="AppSubtleCardBrush" Color="{StaticResource AppCardSecondaryColor}" />
+    <SolidColorBrush x:Key="AppCardStrokeBrush" Color="{StaticResource AppCardStrokeColor}" />
+
+    <Style x:Key="AccentButtonStyle" TargetType="Button" BasedOn="{StaticResource DefaultButtonStyle}">
+        <Setter Property="Background" Value="{StaticResource AppAccentBrush}" />
+        <Setter Property="Foreground" Value="#FFF8FCFF" />
+        <Setter Property="Padding" Value="16,10" />
+    </Style>
+</ResourceDictionary>
