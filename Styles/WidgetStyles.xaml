@@ -3,7 +3,10 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
     <!-- Typography and Foreground Tokens -->
     <SolidColorBrush x:Key="WidgetTextBrush" Color="#EEFFFFFF" />
-    <SolidColorBrush x:Key="WidgetThinkingTextBrush" Color="#B3FFFFFF" />
+    <Color x:Key="WidgetThinkingTextBaseColor">#A8FFFFFF</Color>
+    <Color x:Key="WidgetThinkingTextSweepSoftColor">#BEFFFFFF</Color>
+    <Color x:Key="WidgetThinkingTextSweepPeakColor">#EAFFFFFF</Color>
+    <SolidColorBrush x:Key="WidgetThinkingTextBrush" Color="{StaticResource WidgetThinkingTextBaseColor}" />
     <SolidColorBrush x:Key="WidgetErrorTextBrush" Color="#FFFF8A8A" />
     <SolidColorBrush x:Key="WidgetIconBrush" Color="#99FFFFFF" />
 

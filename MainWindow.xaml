@@ -27,14 +27,21 @@
                     Text="Resident Codex widget for short OCR-based answers." />
             </StackPanel>
 
-            <Button
-                Grid.Column="1"
-                Click="OnOpenWidgetClicked"
-                Content="Show Widget"
-                Style="{StaticResource AccentButtonStyle}" />
+            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="12">
+                <Button
+                    Click="OnOpenLogsClicked"
+                    Content="Open Logs" />
+                <Button
+                    Click="OnToggleTerminalViewClicked"
+                    Content="{x:Bind ViewModel.TerminalToggleText, Mode=OneWay}" />
+                <Button
+                    Click="OnOpenWidgetClicked"
+                    Content="Show Widget"
+                    Style="{StaticResource AccentButtonStyle}" />
+            </StackPanel>
         </Grid>
 
-        <ScrollViewer Grid.Row="1">
+        <ScrollViewer Grid.Row="1" Visibility="{x:Bind ViewModel.ShowSettingsViewVisibility, Mode=OneWay}">
             <StackPanel MaxWidth="920" Padding="32,8,32,32" Spacing="20">
                 <Grid ColumnSpacing="16">
                     <Grid.ColumnDefinitions>
@@ -155,6 +162,26 @@
                                 Header="Show widget on startup"
                                 IsOn="{x:Bind ViewModel.StartWithWidget, Mode=TwoWay}" />
 
+                            <ToggleSwitch
+                                Header="Agent mode"
+                                IsOn="{x:Bind ViewModel.AgentModeEnabled, Mode=TwoWay}" />
+
+                            <ToggleSwitch
+                                Header="Loop"
+                                IsOn="{x:Bind ViewModel.AgentLoopEnabled, Mode=TwoWay}"
+                                Visibility="{x:Bind ViewModel.ShowAgentLoopVisibility, Mode=OneWay}" />
+
+                            <TextBlock
+                                Foreground="{StaticResource AppMutedBrush}"
+                                Text="When enabled, Indolent will try to click the matching answer on screen. It uses local OCR first and only asks Codex again if the click target is ambiguous."
+                                TextWrapping="WrapWholeWords" />
+
+                            <TextBlock
+                                Foreground="{StaticResource AppMutedBrush}"
+                                Text="With loop on, Indolent keeps answering and clicking through visible questions until it no longer finds another answerable one, then reports how many it finished."
+                                TextWrapping="WrapWholeWords"
+                                Visibility="{x:Bind ViewModel.ShowAgentLoopVisibility, Mode=OneWay}" />
+
                             <TextBlock
                                 Foreground="{StaticResource AppMutedBrush}"
                                 Text="The app reads account-visible models from the local Codex cache, then passes the selected model to `codex -m` and the reasoning mode through `model_reasoning_effort` when that model supports it."
@@ -207,5 +234,88 @@
                 </Border>
             </StackPanel>
         </ScrollViewer>
+
+        <Grid
+            Grid.Row="1"
+            MaxWidth="920"
+            Padding="32,8,32,32"
+            RowSpacing="16"
+            Visibility="{x:Bind ViewModel.ShowTerminalViewVisibility, Mode=OneWay}">
+            <Grid RowSpacing="16">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <StackPanel Spacing="8">
+                    <TextBlock
+                        Style="{StaticResource SubtitleTextBlockStyle}"
+                        Text="Codex terminal" />
+                    <TextBlock
+                        Foreground="{StaticResource AppMutedBrush}"
+                        Text="This is the shared Codex CLI transcript the app uses for widget answers and terminal commands."
+                        TextWrapping="WrapWholeWords" />
+                </StackPanel>
+
+                <Border
+                    Grid.Row="1"
+                    Background="{StaticResource AppCardBrush}"
+                    BorderBrush="{StaticResource AppCardStrokeBrush}"
+                    BorderThickness="1"
+                    CornerRadius="12">
+                    <ScrollViewer
+                        x:Name="TerminalTranscriptScrollViewer"
+                        HorizontalScrollBarVisibility="Auto"
+                        HorizontalScrollMode="Enabled"
+                        VerticalScrollBarVisibility="Auto"
+                        VerticalScrollMode="Enabled"
+                        ZoomMode="Disabled">
+                        <TextBlock
+                            Padding="16"
+                            FontFamily="Consolas"
+                            FontSize="13"
+                            IsTextSelectionEnabled="True"
+                            Text="{x:Bind ViewModel.TerminalTranscript, Mode=OneWay}"
+                            TextWrapping="NoWrap" />
+                    </ScrollViewer>
+                </Border>
+
+                <TextBlock
+                    Grid.Row="2"
+                    Foreground="{StaticResource AppMutedBrush}"
+                    Text="Codex arguments"
+                    TextWrapping="WrapWholeWords" />
+
+                <Grid
+                    Grid.Row="3"
+                    ColumnSpacing="12">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <TextBox
+                        Grid.Column="0"
+                        KeyDown="OnTerminalCommandKeyDown"
+                        PlaceholderText="--help"
+                        Text="{x:Bind ViewModel.TerminalCommandText, Mode=TwoWay}" />
+
+                    <Button
+                        Grid.Column="1"
+                        Click="OnRunTerminalCommandClicked"
+                        Content="Run"
+                        IsEnabled="{x:Bind ViewModel.CanRunTerminalCommand, Mode=OneWay}"
+                        Style="{StaticResource AccentButtonStyle}" />
+
+                    <Button
+                        Grid.Column="2"
+                        Click="OnClearTerminalClicked"
+                        Content="Clear" />
+                </Grid>
+            </Grid>
+        </Grid>
     </Grid>
 </Window>

@@ -10,10 +10,33 @@ namespace Indolent.Services;
 public sealed partial class CodexCliService(ILogger<CodexCliService> logger) : ICodexCliService
 {
     private const int DefaultTimeoutSeconds = 60;
+    private const int TerminalTimeoutSeconds = 120;
     private static readonly Regex ModelRegex = ConfigModelRegex();
     private static readonly Regex ReasoningEffortRegex = ConfigReasoningEffortRegex();
     private static ResolvedCommand? cachedCommand;
     private static readonly string workingDirectory = ResolveWorkingDirectory();
+    private static readonly string logsDirectoryPath = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "Indolent",
+        "logs");
+    private readonly Lock transcriptGate = new();
+    private readonly string sessionLogPath = Path.Combine(logsDirectoryPath, $"codex-{DateTimeOffset.Now:yyyyMMdd-HHmmss}.log");
+    private string terminalTranscript = "Shared Codex CLI transcript.\r\nThis view shows the actual Codex commands the app runs.\r\n\r\n";
+
+    public string TerminalTranscript
+    {
+        get
+        {
+            lock (transcriptGate)
+            {
+                return terminalTranscript;
+            }
+        }
+    }
+
+    public event EventHandler? TerminalTranscriptChanged;
+
+    public string LogsDirectoryPath => logsDirectoryPath;
 
     public async Task<CodexPreflightResult> RunPreflightAsync(CancellationToken cancellationToken = default)
     {
@@ -28,7 +51,7 @@ public sealed partial class CodexCliService(ILogger<CodexCliService> logger) : I
             };
         }
 
-        var versionResult = await RunProcessAsync(command, "-V", 10, null, cancellationToken);
+        var versionResult = await RunProcessAsync(command, "-V", 10, null, "preflight", cancellationToken);
 
         if (versionResult.ExitCode != 0)
         {
@@ -108,6 +131,7 @@ public sealed partial class CodexCliService(ILogger<CodexCliService> logger) : I
                 arguments,
                 DefaultTimeoutSeconds,
                 BuildPrompt(request),
+                "answer",
                 cancellationToken);
 
             if (result.TimedOut)
@@ -152,6 +176,8 @@ public sealed partial class CodexCliService(ILogger<CodexCliService> logger) : I
                 };
             }
 
+            AppendAssistantResponse(text);
+
             return new AnswerResult
             {
                 Status = AnswerStatus.Success,
@@ -165,13 +191,50 @@ public sealed partial class CodexCliService(ILogger<CodexCliService> logger) : I
         }
     }
 
-    private static async Task<ProcessResult> RunProcessAsync(
+    public async Task<TerminalCommandResult> RunTerminalCommandAsync(string arguments, CancellationToken cancellationToken = default)
+    {
+        var command = await ResolveCommandAsync(cancellationToken);
+        if (command is null)
+        {
+            return new TerminalCommandResult
+            {
+                ExitCode = -1,
+                StandardError = "Codex CLI is not available from the desktop app process."
+            };
+        }
+
+        var resolvedArguments = string.IsNullOrWhiteSpace(arguments) ? "--help" : arguments.Trim();
+        var result = await RunProcessAsync(command, resolvedArguments, TerminalTimeoutSeconds, null, "terminal", cancellationToken);
+
+        return new TerminalCommandResult
+        {
+            ExitCode = result.ExitCode,
+            StandardOutput = result.StandardOutput,
+            StandardError = result.StandardError,
+            TimedOut = result.TimedOut
+        };
+    }
+
+    public void ClearTerminalTranscript()
+    {
+        lock (transcriptGate)
+        {
+            terminalTranscript = string.Empty;
+        }
+
+        TerminalTranscriptChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private async Task<ProcessResult> RunProcessAsync(
         ResolvedCommand command,
         string arguments,
         int timeoutSeconds,
         string? standardInput,
+        string transcriptLabel,
         CancellationToken cancellationToken)
     {
+        AppendTranscriptEntry(transcriptLabel, command, arguments, standardInput);
+
         using var process = new Process
         {
             StartInfo = new ProcessStartInfo
@@ -193,6 +256,7 @@ public sealed partial class CodexCliService(ILogger<CodexCliService> logger) : I
         }
         catch (Exception ex) when (ex is Win32Exception or FileNotFoundException)
         {
+            AppendProcessResult(string.Empty, ex.Message, -1, false);
             return new ProcessResult(-1, string.Empty, ex.Message, false);
         }
 
@@ -208,7 +272,10 @@ public sealed partial class CodexCliService(ILogger<CodexCliService> logger) : I
         {
             await process.WaitForExitAsync(timeoutCts.Token);
             await inputTask;
-            return new ProcessResult(process.ExitCode, await outputTask, await errorTask, false);
+            var standardOutput = await outputTask;
+            var standardError = await errorTask;
+            AppendProcessResult(standardOutput, standardError, process.ExitCode, false);
+            return new ProcessResult(process.ExitCode, standardOutput, standardError, false);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
@@ -222,7 +289,10 @@ public sealed partial class CodexCliService(ILogger<CodexCliService> logger) : I
             }
 
             await inputTask.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
-            return new ProcessResult(-1, await outputTask, await errorTask, true);
+            var standardOutput = await outputTask;
+            var standardError = await errorTask;
+            AppendProcessResult(standardOutput, standardError, -1, true);
+            return new ProcessResult(-1, standardOutput, standardError, true);
         }
     }
 
@@ -264,6 +334,102 @@ public sealed partial class CodexCliService(ILogger<CodexCliService> logger) : I
             {
                 // ignore best-effort cleanup
             }
+        }
+    }
+
+    private void AppendTranscriptEntry(string transcriptLabel, ResolvedCommand command, string arguments, string? standardInput)
+    {
+        var builder = new StringBuilder()
+            .Append('[')
+            .Append(DateTimeOffset.Now.ToString("HH:mm:ss"))
+            .Append("] ")
+            .Append(transcriptLabel)
+            .Append(": ")
+            .Append(command.FileName);
+
+        var resolvedArguments = command.BuildArguments(arguments);
+        if (!string.IsNullOrWhiteSpace(resolvedArguments))
+        {
+            builder.Append(' ').Append(resolvedArguments);
+        }
+
+        builder.AppendLine();
+
+        if (!string.IsNullOrWhiteSpace(standardInput))
+        {
+            builder.AppendLine("[stdin]");
+            builder.AppendLine(standardInput.TrimEnd());
+        }
+
+        AppendTranscript(builder.ToString());
+    }
+
+    private void AppendProcessResult(string standardOutput, string standardError, int exitCode, bool timedOut)
+    {
+        var builder = new StringBuilder();
+
+        if (!string.IsNullOrWhiteSpace(standardOutput))
+        {
+            builder.AppendLine("[stdout]");
+            builder.AppendLine(standardOutput.TrimEnd());
+        }
+
+        if (!string.IsNullOrWhiteSpace(standardError))
+        {
+            builder.AppendLine("[stderr]");
+            builder.AppendLine(standardError.TrimEnd());
+        }
+
+        builder.Append('[')
+            .Append(timedOut ? "timed out" : $"exit {exitCode}")
+            .AppendLine("]")
+            .AppendLine();
+
+        AppendTranscript(builder.ToString());
+    }
+
+    private void AppendAssistantResponse(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return;
+        }
+
+        var builder = new StringBuilder()
+            .AppendLine("[assistant]")
+            .AppendLine(text.TrimEnd())
+            .AppendLine();
+
+        AppendTranscript(builder.ToString());
+    }
+
+    private void AppendTranscript(string chunk)
+    {
+        if (string.IsNullOrWhiteSpace(chunk))
+        {
+            return;
+        }
+
+        lock (transcriptGate)
+        {
+            terminalTranscript += chunk;
+        }
+
+        TryAppendLogChunk(chunk);
+
+        TerminalTranscriptChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void TryAppendLogChunk(string chunk)
+    {
+        try
+        {
+            Directory.CreateDirectory(logsDirectoryPath);
+            File.AppendAllText(sessionLogPath, chunk);
+        }
+        catch
+        {
+            // ignore best-effort log persistence failures
         }
     }
 

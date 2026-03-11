@@ -52,15 +52,26 @@
                 <DoubleAnimation
                     Storyboard.TargetName="ThinkingTextShimmerTransform"
                     Storyboard.TargetProperty="X"
-                    Duration="0:0:2.8"
-                    From="-1.0"
-                    To="2.0"
-                    BeginTime="0:0:0.5">
+                    Duration="0:0:3.6"
+                    From="-1.35"
+                    To="1.35">
                     <DoubleAnimation.EasingFunction>
-                        <CubicEase EasingMode="EaseInOut" />
+                        <SineEase EasingMode="EaseInOut" />
                     </DoubleAnimation.EasingFunction>
                 </DoubleAnimation>
             </Storyboard>
+            <LinearGradientBrush x:Key="WidgetThinkingTextShimmerBrush" StartPoint="0,0.5" EndPoint="1,0.5">
+                <LinearGradientBrush.RelativeTransform>
+                    <TranslateTransform x:Name="ThinkingTextShimmerTransform" X="-1.35" />
+                </LinearGradientBrush.RelativeTransform>
+                <GradientStop Color="{StaticResource WidgetThinkingTextBaseColor}" Offset="0.00" />
+                <GradientStop Color="{StaticResource WidgetThinkingTextBaseColor}" Offset="0.28" />
+                <GradientStop Color="{StaticResource WidgetThinkingTextSweepSoftColor}" Offset="0.41" />
+                <GradientStop Color="{StaticResource WidgetThinkingTextSweepPeakColor}" Offset="0.50" />
+                <GradientStop Color="{StaticResource WidgetThinkingTextSweepSoftColor}" Offset="0.59" />
+                <GradientStop Color="{StaticResource WidgetThinkingTextBaseColor}" Offset="0.72" />
+                <GradientStop Color="{StaticResource WidgetThinkingTextBaseColor}" Offset="1.00" />
+            </LinearGradientBrush>
         </Grid.Resources>
 
         <helpers:CursorGrid
@@ -123,22 +134,8 @@
                                 <TextBlock
                                     x:Name="ThinkingTextBlock"
                                     Style="{StaticResource WidgetThinkingTextStyle}"
-                                    Text="{x:Bind ViewModel.MessageText, Mode=OneWay}">
-                                    <TextBlock.Foreground>
-                                        <LinearGradientBrush StartPoint="0,0.5" EndPoint="1,0.5">
-                                            <LinearGradientBrush.RelativeTransform>
-                                                <TranslateTransform x:Name="ThinkingTextShimmerTransform" X="-1.0" />
-                                            </LinearGradientBrush.RelativeTransform>
-                                            <GradientStop Color="#80FFFFFF" Offset="0.0" />
-                                            <GradientStop Color="#80FFFFFF" Offset="0.38" />
-                                            <GradientStop Color="#CCFFFFFF" Offset="0.46" />
-                                            <GradientStop Color="#FAFFFFFF" Offset="0.50" />
-                                            <GradientStop Color="#CCFFFFFF" Offset="0.54" />
-                                            <GradientStop Color="#80FFFFFF" Offset="0.62" />
-                                            <GradientStop Color="#80FFFFFF" Offset="1.0" />
-                                        </LinearGradientBrush>
-                                    </TextBlock.Foreground>
-                                </TextBlock>
+                                    Foreground="{StaticResource WidgetThinkingTextShimmerBrush}"
+                                    Text="{x:Bind ViewModel.MessageText, Mode=OneWay}" />
                             </StackPanel>
                         </Grid>
 

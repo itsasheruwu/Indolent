@@ -10,10 +10,14 @@ public sealed class MainWindowViewModel : ObservableObject
     private readonly ICodexCliService codexCliService;
     private readonly ICodexModelCatalogService modelCatalogService;
     private readonly ISettingsStore settingsStore;
+    private readonly SynchronizationContext? synchronizationContext;
 
     private bool isRefreshing;
+    private bool isRunningTerminalCommand;
+    private bool isTerminalViewOpen;
     private string selectedModel;
     private string selectedReasoningEffort;
+    private string terminalCommandText = "--help";
     private CodexModelOption? selectedModelOption;
     private int accountVisibleModelCount;
 
@@ -27,11 +31,13 @@ public sealed class MainWindowViewModel : ObservableObject
         this.codexCliService = codexCliService;
         this.modelCatalogService = modelCatalogService;
         this.settingsStore = settingsStore;
+        synchronizationContext = SynchronizationContext.Current;
         selectedModel = appState.SelectedModel;
         selectedReasoningEffort = appState.SelectedReasoningEffort;
         AvailableModels = [];
         ReasoningOptions = [];
         appState.PropertyChanged += (_, _) => SyncFromState();
+        codexCliService.TerminalTranscriptChanged += (_, _) => RaisePropertyChangedOnUiThread(nameof(TerminalTranscript));
         UpdateSelectedModelState();
     }
 
@@ -72,6 +78,51 @@ public sealed class MainWindowViewModel : ObservableObject
     }
 
     public bool CanRefresh => !IsRefreshing;
+
+    public bool IsTerminalViewOpen
+    {
+        get => isTerminalViewOpen;
+        private set
+        {
+            if (SetProperty(ref isTerminalViewOpen, value))
+            {
+                OnPropertyChanged(nameof(ShowSettingsViewVisibility));
+                OnPropertyChanged(nameof(ShowTerminalViewVisibility));
+                OnPropertyChanged(nameof(TerminalToggleText));
+            }
+        }
+    }
+
+    public Visibility ShowSettingsViewVisibility => IsTerminalViewOpen ? Visibility.Collapsed : Visibility.Visible;
+
+    public Visibility ShowTerminalViewVisibility => IsTerminalViewOpen ? Visibility.Visible : Visibility.Collapsed;
+
+    public string TerminalToggleText => IsTerminalViewOpen ? "Back to Settings" : "Open Terminal";
+
+    public string TerminalCommandText
+    {
+        get => terminalCommandText;
+        set => SetProperty(ref terminalCommandText, value);
+    }
+
+    public string TerminalTranscript
+    {
+        get => codexCliService.TerminalTranscript;
+    }
+
+    public bool IsRunningTerminalCommand
+    {
+        get => isRunningTerminalCommand;
+        private set
+        {
+            if (SetProperty(ref isRunningTerminalCommand, value))
+            {
+                OnPropertyChanged(nameof(CanRunTerminalCommand));
+            }
+        }
+    }
+
+    public bool CanRunTerminalCommand => !IsRunningTerminalCommand && appState.Preflight.IsInstalled;
 
     public bool ShowInstallBlocker => !appState.Preflight.IsInstalled;
 
@@ -132,6 +183,48 @@ public sealed class MainWindowViewModel : ObservableObject
         }
     }
 
+    public bool AgentModeEnabled
+    {
+        get => appState.AgentModeEnabled;
+        set
+        {
+            if (appState.AgentModeEnabled == value)
+            {
+                return;
+            }
+
+            appState.AgentModeEnabled = value;
+            if (!value && appState.AgentLoopEnabled)
+            {
+                appState.AgentLoopEnabled = false;
+                OnPropertyChanged(nameof(AgentLoopEnabled));
+                OnPropertyChanged(nameof(ShowAgentLoopVisibility));
+            }
+
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(ShowAgentLoopVisibility));
+            _ = appState.PersistAsync(settingsStore);
+        }
+    }
+
+    public bool AgentLoopEnabled
+    {
+        get => appState.AgentLoopEnabled;
+        set
+        {
+            if (appState.AgentLoopEnabled == value)
+            {
+                return;
+            }
+
+            appState.AgentLoopEnabled = value;
+            OnPropertyChanged();
+            _ = appState.PersistAsync(settingsStore);
+        }
+    }
+
+    public Visibility ShowAgentLoopVisibility => AgentModeEnabled ? Visibility.Visible : Visibility.Collapsed;
+
     public async Task RefreshPreflightAsync()
     {
         if (IsRefreshing)
@@ -181,6 +274,36 @@ public sealed class MainWindowViewModel : ObservableObject
         await appState.PersistAsync(settingsStore);
     }
 
+    public void ToggleTerminalView()
+        => IsTerminalViewOpen = !IsTerminalViewOpen;
+
+    public void ClearTerminalTranscript()
+    {
+        codexCliService.ClearTerminalTranscript();
+        OnPropertyChanged(nameof(TerminalTranscript));
+    }
+
+    public async Task RunTerminalCommandAsync()
+    {
+        if (IsRunningTerminalCommand)
+        {
+            return;
+        }
+
+        var trimmedArguments = string.IsNullOrWhiteSpace(TerminalCommandText) ? "--help" : TerminalCommandText.Trim();
+        IsRunningTerminalCommand = true;
+
+        try
+        {
+            await codexCliService.RunTerminalCommandAsync(trimmedArguments);
+            OnPropertyChanged(nameof(TerminalTranscript));
+        }
+        finally
+        {
+            IsRunningTerminalCommand = false;
+        }
+    }
+
     private void SyncFromState()
     {
         selectedModel = appState.SelectedModel;
@@ -190,6 +313,7 @@ public sealed class MainWindowViewModel : ObservableObject
         OnPropertyChanged(nameof(SelectedReasoningEffort));
         OnPropertyChanged(nameof(IsReady));
         OnPropertyChanged(nameof(CanRefresh));
+        OnPropertyChanged(nameof(CanRunTerminalCommand));
         OnPropertyChanged(nameof(ShowInstallBlocker));
         OnPropertyChanged(nameof(ShowInstallBlockerVisibility));
         OnPropertyChanged(nameof(CodexVersionText));
@@ -198,6 +322,10 @@ public sealed class MainWindowViewModel : ObservableObject
         OnPropertyChanged(nameof(BlockingMessage));
         OnPropertyChanged(nameof(LastAnswerSummary));
         OnPropertyChanged(nameof(StartWithWidget));
+        OnPropertyChanged(nameof(AgentModeEnabled));
+        OnPropertyChanged(nameof(AgentLoopEnabled));
+        OnPropertyChanged(nameof(ShowAgentLoopVisibility));
+        OnPropertyChanged(nameof(TerminalTranscript));
     }
 
     private void LoadAvailableModels(IReadOnlyList<CodexModelOption> models)
@@ -301,5 +429,16 @@ public sealed class MainWindowViewModel : ObservableObject
 
             target[index] = source[index];
         }
+    }
+
+    private void RaisePropertyChangedOnUiThread(string propertyName)
+    {
+        if (synchronizationContext is null)
+        {
+            OnPropertyChanged(propertyName);
+            return;
+        }
+
+        synchronizationContext.Post(_ => OnPropertyChanged(propertyName), null);
     }
 }

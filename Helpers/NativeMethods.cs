@@ -19,8 +19,18 @@ internal static class NativeMethods
     internal const uint SwpNosize = 0x0001;
     internal const uint SwpNoActivate = 0x0010;
     internal const uint SwpFrameChanged = 0x0020;
+    internal const uint InputMouse = 0;
+    internal const uint MouseeventfMove = 0x0001;
+    internal const uint MouseeventfLeftdown = 0x0002;
+    internal const uint MouseeventfLeftup = 0x0004;
+    internal const uint MouseeventfVirtualdesk = 0x4000;
+    internal const uint MouseeventfAbsolute = 0x8000;
     internal const uint ImageCursor = 2;
     internal const uint LrLoadFromFile = 0x0010;
+    internal const int SmXvirtualscreen = 76;
+    internal const int SmYvirtualscreen = 77;
+    internal const int SmCxvirtualscreen = 78;
+    internal const int SmCyvirtualscreen = 79;
     
     internal static readonly IntPtr IdcArrow = new(32512);
     internal static readonly IntPtr IdcSizeAll = new(32646);
@@ -59,6 +69,9 @@ internal static class NativeMethods
     internal static extern IntPtr SetCursor(IntPtr hCursor);
 
     [DllImport("user32.dll")]
+    internal static extern uint SendInput(uint nInputs, Input[] pInputs, int cbSize);
+
+    [DllImport("user32.dll")]
     internal static extern uint GetDpiForWindow(IntPtr hWnd);
 
     [DllImport("user32.dll")]
@@ -84,6 +97,12 @@ internal static class NativeMethods
 
     [DllImport("user32.dll")]
     internal static extern bool GetCursorPos(out NativePoint point);
+
+    [DllImport("user32.dll")]
+    internal static extern bool SetCursorPos(int x, int y);
+
+    [DllImport("user32.dll")]
+    internal static extern int GetSystemMetrics(int nIndex);
 
     [DllImport("user32.dll")]
     internal static extern IntPtr MonitorFromPoint(NativePoint point, uint flags);
@@ -114,5 +133,30 @@ internal static class NativeMethods
         public NativeRect Monitor;
         public NativeRect WorkArea;
         public uint Flags;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct Input
+    {
+        public uint Type;
+        public InputUnion Data;
+    }
+
+    [StructLayout(LayoutKind.Explicit)]
+    internal struct InputUnion
+    {
+        [FieldOffset(0)]
+        public MouseInput Mouse;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct MouseInput
+    {
+        public int X;
+        public int Y;
+        public uint MouseData;
+        public uint Flags;
+        public uint Time;
+        public IntPtr ExtraInfo;
     }
 }

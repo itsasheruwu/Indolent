@@ -1,6 +1,9 @@
 using System.Diagnostics;
 using Indolent.Helpers;
+using Indolent.Services;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.UI.Windowing;
+using Windows.System;
 
 namespace Indolent;
 
@@ -13,6 +16,7 @@ public sealed partial class MainWindow : Window
         ViewModel = viewModel;
         InitializeComponent();
         Activated += OnWindowActivated;
+        ViewModel.PropertyChanged += OnViewModelPropertyChanged;
     }
 
     public MainWindowViewModel ViewModel { get; }
@@ -37,6 +41,16 @@ public sealed partial class MainWindow : Window
     private void OnOpenWidgetClicked(object sender, RoutedEventArgs e)
         => App.CurrentApp.WidgetWindowInstance?.ShowWidget();
 
+    private void OnOpenLogsClicked(object sender, RoutedEventArgs e)
+    {
+        var logsDirectory = App.CurrentApp.Host.Services.GetRequiredService<ICodexCliService>().LogsDirectoryPath;
+        Directory.CreateDirectory(logsDirectory);
+        Process.Start(new ProcessStartInfo("explorer.exe", $"\"{logsDirectory}\"") { UseShellExecute = true });
+    }
+
+    private void OnToggleTerminalViewClicked(object sender, RoutedEventArgs e)
+        => ViewModel.ToggleTerminalView();
+
     private async void OnModelComboBoxLostFocus(object sender, RoutedEventArgs e)
         => await ViewModel.CommitSelectedModelAsync();
 
@@ -45,6 +59,23 @@ public sealed partial class MainWindow : Window
 
     private async void OnReasoningComboBoxSelectionChanged(object sender, SelectionChangedEventArgs e)
         => await ViewModel.CommitSelectedReasoningAsync();
+
+    private async void OnRunTerminalCommandClicked(object sender, RoutedEventArgs e)
+        => await ViewModel.RunTerminalCommandAsync();
+
+    private void OnClearTerminalClicked(object sender, RoutedEventArgs e)
+        => ViewModel.ClearTerminalTranscript();
+
+    private async void OnTerminalCommandKeyDown(object sender, Microsoft.UI.Xaml.Input.KeyRoutedEventArgs e)
+    {
+        if (e.Key != VirtualKey.Enter)
+        {
+            return;
+        }
+
+        e.Handled = true;
+        await ViewModel.RunTerminalCommandAsync();
+    }
 
     private void OnOpenInstallGuideClicked(object sender, RoutedEventArgs e)
         => OpenExternal("https://help.openai.com/en/articles/11096431-openai-codex-cli-getting-started");
@@ -65,6 +96,15 @@ public sealed partial class MainWindow : Window
         if (args.WindowActivationState != WindowActivationState.Deactivated)
         {
             await ViewModel.RefreshPreflightAsync();
+        }
+    }
+
+    private void OnViewModelPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(ViewModel.TerminalTranscript))
+        {
+            _ = DispatcherQueue.TryEnqueue(() =>
+                TerminalTranscriptScrollViewer?.ChangeView(null, double.MaxValue, null, disableAnimation: true));
         }
     }
 

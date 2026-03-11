@@ -10,7 +10,7 @@ namespace Indolent.Services;
 
 public sealed class ScreenCaptureService(ILogger<ScreenCaptureService> logger) : IScreenCaptureService
 {
-    public Task<string> CaptureDisplayUnderCursorAsync(CancellationToken cancellationToken = default)
+    public Task<ScreenCaptureResult> CaptureDisplayUnderCursorAsync(CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -39,6 +39,10 @@ public sealed class ScreenCaptureService(ILogger<ScreenCaptureService> logger) :
         bitmap.Save(imagePath, ImageFormat.Png);
 
         logger.LogInformation("Captured screen bounds {Bounds} to {Path}", bounds, imagePath);
-        return Task.FromResult(imagePath);
+        return Task.FromResult(new ScreenCaptureResult
+        {
+            ImagePath = imagePath,
+            Bounds = bounds
+        });
     }
 }

@@ -9,6 +9,7 @@ public sealed class WidgetWindowViewModel : ObservableObject
     private bool isHovered;
     private string messageText = string.Empty;
     private bool isError;
+    private bool isVideoStandby;
 
     public WidgetWindowViewModel(AppState appState)
     {
@@ -29,7 +30,7 @@ public sealed class WidgetWindowViewModel : ObservableObject
         private set => SetProperty(ref messageText, value);
     }
 
-    public bool IsBusy => appState.IsAnswering;
+    public bool IsBusy => appState.IsAnswering && !isVideoStandby;
 
     public bool IsError
     {
@@ -45,28 +46,47 @@ public sealed class WidgetWindowViewModel : ObservableObject
 
     public void SetThinking()
     {
+        isVideoStandby = false;
         IsError = false;
         MessageText = "Thinking...";
         OnPropertyChanged(nameof(ShowMessage));
         OnPropertyChanged(nameof(ShowActionButton));
+        OnPropertyChanged(nameof(IsBusy));
+    }
+
+    public void SetVideoStandby()
+    {
+        isVideoStandby = true;
+        IsError = false;
+        MessageText = "Waiting for video to finish...";
+        OnPropertyChanged(nameof(ShowMessage));
+        OnPropertyChanged(nameof(ShowActionButton));
+        OnPropertyChanged(nameof(IsBusy));
     }
 
     public void SetAnswerResult(AnswerResult result)
     {
+        isVideoStandby = false;
         IsError = !result.IsSuccess;
         MessageText = result.IsSuccess ? result.Text : result.ErrorMessage;
         OnPropertyChanged(nameof(ShowMessage));
         OnPropertyChanged(nameof(ShowActionButton));
+        OnPropertyChanged(nameof(IsBusy));
     }
 
     private void SyncFromState()
     {
         if (appState.IsAnswering)
         {
-            SetThinking();
+            if (!isVideoStandby)
+            {
+                SetThinking();
+            }
+
             return;
         }
 
+        isVideoStandby = false;
         if (string.Equals(appState.LastAnswerSummary, "No answer yet.", StringComparison.Ordinal))
         {
             MessageText = string.Empty;

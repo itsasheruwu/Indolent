@@ -29,6 +29,36 @@ public sealed class AppState : ObservableObject
         }
     }
 
+    public bool AgentModeEnabled
+    {
+        get => settings.AgentModeEnabled;
+        set
+        {
+            if (settings.AgentModeEnabled == value)
+            {
+                return;
+            }
+
+            settings.AgentModeEnabled = value;
+            OnPropertyChanged();
+        }
+    }
+
+    public bool AgentLoopEnabled
+    {
+        get => settings.AgentLoopEnabled;
+        set
+        {
+            if (settings.AgentLoopEnabled == value)
+            {
+                return;
+            }
+
+            settings.AgentLoopEnabled = value;
+            OnPropertyChanged();
+        }
+    }
+
     public WidgetBounds WidgetBounds => settings.WidgetBounds;
 
     public CodexPreflightResult Preflight
@@ -109,6 +139,8 @@ public sealed class AppState : ObservableObject
 
         OnPropertyChanged(nameof(RecentModels));
         OnPropertyChanged(nameof(StartWithWidget));
+        OnPropertyChanged(nameof(AgentModeEnabled));
+        OnPropertyChanged(nameof(AgentLoopEnabled));
     }
 
     public void UpdatePreflight(CodexPreflightResult result) => Preflight = result;

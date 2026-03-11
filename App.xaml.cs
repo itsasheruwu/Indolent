@@ -34,6 +34,7 @@ namespace Indolent
                     services.AddSingleton<ICodexModelCatalogService, CodexModelCatalogService>();
                     services.AddSingleton<IOcrService, WindowsOcrService>();
                     services.AddSingleton<IScreenCaptureService, ScreenCaptureService>();
+                    services.AddSingleton<IAgentClickService, AgentClickService>();
                     services.AddSingleton<ITrayService, TrayService>();
                     services.AddSingleton<MainWindowViewModel>();
                     services.AddSingleton<WidgetWindowViewModel>();
