@@ -9,6 +9,10 @@ namespace Indolent
 {
     public partial class App : Application
     {
+        private static readonly string StartupLogPath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "Indolent",
+            "startup.log");
         private MainWindow? mainWindow;
         private WidgetWindow? widgetWindow;
         private bool isShuttingDown;
@@ -16,6 +20,7 @@ namespace Indolent
         public App()
         {
             InitializeComponent();
+            UnhandledException += OnUnhandledException;
             Host = Microsoft.Extensions.Hosting.Host.CreateDefaultBuilder()
                 .ConfigureAppConfiguration((_, configuration) =>
                 {
@@ -32,6 +37,10 @@ namespace Indolent
                     services.AddSingleton<ISettingsStore, JsonSettingsStore>();
                     services.AddSingleton<ICodexCliService, CodexCliService>();
                     services.AddSingleton<ICodexModelCatalogService, CodexModelCatalogService>();
+                    services.AddSingleton<IProviderRuntime, OpenAiCodexProviderRuntime>();
+                    services.AddSingleton<IProviderRuntime, OpenCodeProviderRuntime>();
+                    services.AddSingleton<IProviderRuntimeRegistry, ProviderRuntimeRegistry>();
+                    services.AddSingleton<IOpenCodeSetupService, OpenCodeSetupService>();
                     services.AddSingleton<IOcrService, WindowsOcrService>();
                     services.AddSingleton<IScreenCaptureService, ScreenCaptureService>();
                     services.AddSingleton<IAgentClickService, AgentClickService>();
@@ -57,9 +66,9 @@ namespace Indolent
             await Host.StartAsync();
 
             var settingsStore = Host.Services.GetRequiredService<ISettingsStore>();
-            var codexCli = Host.Services.GetRequiredService<ICodexCliService>();
+            var providerRegistry = Host.Services.GetRequiredService<IProviderRuntimeRegistry>();
             var state = Host.Services.GetRequiredService<AppState>();
-            await state.InitializeAsync(settingsStore, codexCli);
+            await state.InitializeAsync(settingsStore, providerRegistry);
 
             mainWindow = new MainWindow(Host.Services.GetRequiredService<MainWindowViewModel>());
             widgetWindow = new WidgetWindow(Host.Services.GetRequiredService<WidgetWindowViewModel>());
@@ -72,12 +81,11 @@ namespace Indolent
                 ShowMainWindow,
                 async () => await ShutdownAsync());
 
-            mainWindow.Activate();
+            mainWindow.ShowAppWindow();
 
             if (state.StartWithWidget)
             {
-                widgetWindow.Activate();
-                widgetWindow.BringToFront();
+                widgetWindow.ShowWidget();
             }
 
             _ = mainWindow.ViewModel.RefreshPreflightAsync();
@@ -111,5 +119,32 @@ namespace Indolent
                 Exit();
             }
         }
+
+        private void OnUnhandledException(object sender, Microsoft.UI.Xaml.UnhandledExceptionEventArgs e)
+        {
+            TryWriteStartupLog(e.Exception);
+        }
+
+        private static void TryWriteStartupLog(Exception exception)
+        {
+            try
+            {
+                var directory = Path.GetDirectoryName(StartupLogPath);
+                if (!string.IsNullOrWhiteSpace(directory))
+                {
+                    Directory.CreateDirectory(directory);
+                }
+
+                File.AppendAllText(
+                    StartupLogPath,
+                    $"[{DateTimeOffset.Now:O}] {exception}{Environment.NewLine}{Environment.NewLine}");
+            }
+            catch
+            {
+                // Best effort only.
+            }
+        }
     }
 }
+
+

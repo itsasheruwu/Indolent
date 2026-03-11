@@ -2,6 +2,10 @@ namespace Indolent.Models;
 
 public sealed class AppSettings
 {
+    public string SelectedProviderId { get; set; } = ProviderIds.OpenAiCodex;
+
+    public Dictionary<string, ProviderSelectionSettings> ProviderSelections { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
     public string SelectedModel { get; set; } = "gpt-5.4";
 
     public string SelectedReasoningEffort { get; set; } = "low";

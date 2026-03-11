@@ -10,7 +10,8 @@ using Microsoft.Extensions.Logging;
 namespace Indolent.Services;
 
 public sealed partial class AgentClickService(
-    ICodexCliService codexCliService,
+    AppState appState,
+    IProviderRuntimeRegistry providerRegistry,
     ILogger<AgentClickService> logger) : IAgentClickService
 {
     private const string FallbackPrompt = "Pick the candidate that should be clicked for the correct answer. Return only the candidate id.";
@@ -223,8 +224,14 @@ public sealed partial class AgentClickService(
         string reasoningEffort,
         CancellationToken cancellationToken)
     {
+        var providerRuntime = providerRegistry.GetProvider(appState.SelectedProviderId);
+        if (string.Equals(providerRuntime.ProviderId, ProviderIds.OpenCode, StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
         var screenText = BuildFallbackScreenText(answerText, candidates);
-        var result = await codexCliService.AnswerAsync(new AnswerRequest
+        var result = await providerRuntime.AnswerAsync(new AnswerRequest
         {
             Model = model,
             ScreenText = screenText,

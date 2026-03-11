@@ -24,7 +24,7 @@
                 <TextBlock
                     Foreground="{StaticResource AppMutedBrush}"
                     Style="{StaticResource BodyStrongTextBlockStyle}"
-                    Text="Resident Codex widget for short OCR-based answers." />
+                    Text="{x:Bind ViewModel.AppDescriptionText, Mode=OneWay}" />
             </StackPanel>
 
             <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="12">
@@ -58,7 +58,7 @@
                         <StackPanel Spacing="16">
                             <TextBlock
                                 Style="{StaticResource SubtitleTextBlockStyle}"
-                                Text="Codex status" />
+                                Text="{x:Bind ViewModel.StatusCardTitle, Mode=OneWay}" />
                             <Grid ColumnSpacing="12" RowSpacing="12">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="Auto" />
@@ -70,11 +70,11 @@
                                     <RowDefinition Height="Auto" />
                                 </Grid.RowDefinitions>
 
-                                <TextBlock Text="CLI" />
+                                <TextBlock Text="{x:Bind ViewModel.CliLabelText, Mode=OneWay}" />
                                 <TextBlock
                                     Grid.Column="1"
                                     Foreground="{StaticResource AppMutedBrush}"
-                                    Text="{x:Bind ViewModel.CodexVersionText, Mode=OneWay}" />
+                                    Text="{x:Bind ViewModel.VersionText, Mode=OneWay}" />
 
                                 <TextBlock Grid.Row="1" Text="Session" />
                                 <TextBlock
@@ -115,15 +115,23 @@
                         <StackPanel Spacing="16">
                             <TextBlock
                                 Style="{StaticResource SubtitleTextBlockStyle}"
-                                Text="Model and widget" />
+                                Text="{x:Bind ViewModel.ProviderSectionTitle, Mode=OneWay}" />
                             <StackPanel Spacing="10">
+                                <TextBlock Text="Provider" />
+                                <ComboBox
+                                    x:Name="ProviderComboBox"
+                                    DisplayMemberPath="DisplayName"
+                                    ItemsSource="{x:Bind ViewModel.AvailableProviders, Mode=OneWay}"
+                                    SelectionChanged="OnProviderComboBoxSelectionChanged"
+                                    SelectedValue="{x:Bind ViewModel.SelectedProviderId, Mode=TwoWay}"
+                                    SelectedValuePath="Id" />
                                 <TextBlock Text="Available models" />
                                 <ComboBox
                                     x:Name="ModelComboBox"
                                     IsEnabled="{x:Bind ViewModel.IsReady, Mode=OneWay}"
                                     DisplayMemberPath="DisplayName"
                                     ItemsSource="{x:Bind ViewModel.AvailableModels, Mode=OneWay}"
-                                    PlaceholderText="Choose a Codex model"
+                                    PlaceholderText="Choose a model"
                                     SelectionChanged="OnModelComboBoxSelectionChanged"
                                     SelectedValue="{x:Bind ViewModel.SelectedModel, Mode=TwoWay}"
                                     SelectedValuePath="Slug" />
@@ -173,7 +181,7 @@
 
                             <TextBlock
                                 Foreground="{StaticResource AppMutedBrush}"
-                                Text="When enabled, Indolent will try to click the matching answer on screen. It uses local OCR first and only asks Codex again if the click target is ambiguous."
+                                Text="{x:Bind ViewModel.AgentModeDescription, Mode=OneWay}"
                                 TextWrapping="WrapWholeWords" />
 
                             <TextBlock
@@ -184,7 +192,7 @@
 
                             <TextBlock
                                 Foreground="{StaticResource AppMutedBrush}"
-                                Text="The app reads account-visible models from the local Codex cache, then passes the selected model to `codex -m` and the reasoning mode through `model_reasoning_effort` when that model supports it."
+                                Text="{x:Bind ViewModel.ProviderBehaviorText, Mode=OneWay}"
                                 TextWrapping="WrapWholeWords" />
                         </StackPanel>
                     </Border>
@@ -204,11 +212,26 @@
                         <TextBlock
                             Text="{x:Bind ViewModel.BlockingMessage, Mode=OneWay}"
                             TextWrapping="WrapWholeWords" />
+                        <TextBlock
+                            Foreground="{StaticResource AppMutedBrush}"
+                            Text="{x:Bind ViewModel.GuidedSetupDescription, Mode=OneWay}"
+                            TextWrapping="WrapWholeWords"
+                            Visibility="{x:Bind ViewModel.ShowGuidedSetupVisibility, Mode=OneWay}" />
+                        <TextBlock
+                            Foreground="{StaticResource AppMutedBrush}"
+                            Text="{x:Bind ViewModel.SetupStatusText, Mode=OneWay}"
+                            TextWrapping="WrapWholeWords"
+                            Visibility="{x:Bind ViewModel.ShowSetupStatusVisibility, Mode=OneWay}" />
                         <StackPanel Orientation="Horizontal" Spacing="12">
                             <Button
+                                Click="OnRunGuidedSetupClicked"
+                                Content="Run guided setup"
+                                IsEnabled="{x:Bind ViewModel.CanRunGuidedSetup, Mode=OneWay}"
+                                Style="{StaticResource AccentButtonStyle}"
+                                Visibility="{x:Bind ViewModel.ShowGuidedSetupVisibility, Mode=OneWay}" />
+                            <Button
                                 Click="OnOpenInstallGuideClicked"
-                                Content="Open install guide"
-                                Style="{StaticResource AccentButtonStyle}" />
+                                Content="Open install guide" />
                             <Button
                                 Click="OnRefreshClicked"
                                 Content="Re-check" />
@@ -228,7 +251,7 @@
                             Text="CLI wrapper behavior" />
                         <TextBlock
                             Foreground="{StaticResource AppMutedBrush}"
-                            Text="Indolent does not manage authentication. It reuses whatever Codex CLI session is already available and only shells out to Codex when needed."
+                            Text="{x:Bind ViewModel.ProviderBehaviorText, Mode=OneWay}"
                             TextWrapping="WrapWholeWords" />
                     </StackPanel>
                 </Border>
@@ -252,10 +275,10 @@
                 <StackPanel Spacing="8">
                     <TextBlock
                         Style="{StaticResource SubtitleTextBlockStyle}"
-                        Text="Codex terminal" />
+                        Text="{x:Bind ViewModel.TerminalTitle, Mode=OneWay}" />
                     <TextBlock
                         Foreground="{StaticResource AppMutedBrush}"
-                        Text="This is the shared Codex CLI transcript the app uses for widget answers and terminal commands."
+                        Text="{x:Bind ViewModel.TerminalDescription, Mode=OneWay}"
                         TextWrapping="WrapWholeWords" />
                 </StackPanel>
 
@@ -285,7 +308,7 @@
                 <TextBlock
                     Grid.Row="2"
                     Foreground="{StaticResource AppMutedBrush}"
-                    Text="Codex arguments"
+                    Text="{x:Bind ViewModel.TerminalArgumentsLabel, Mode=OneWay}"
                     TextWrapping="WrapWholeWords" />
 
                 <Grid
@@ -319,3 +342,5 @@
         </Grid>
     </Grid>
 </Window>
+
+

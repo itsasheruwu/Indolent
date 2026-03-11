@@ -1,7 +1,5 @@
 using System.Diagnostics;
 using Indolent.Helpers;
-using Indolent.Services;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.UI.Windowing;
 using Windows.System;
 
@@ -43,13 +41,19 @@ public sealed partial class MainWindow : Window
 
     private void OnOpenLogsClicked(object sender, RoutedEventArgs e)
     {
-        var logsDirectory = App.CurrentApp.Host.Services.GetRequiredService<ICodexCliService>().LogsDirectoryPath;
+        var logsDirectory = ViewModel.LogsDirectoryPath;
         Directory.CreateDirectory(logsDirectory);
         Process.Start(new ProcessStartInfo("explorer.exe", $"\"{logsDirectory}\"") { UseShellExecute = true });
     }
 
     private void OnToggleTerminalViewClicked(object sender, RoutedEventArgs e)
         => ViewModel.ToggleTerminalView();
+
+    private async void OnRunGuidedSetupClicked(object sender, RoutedEventArgs e)
+        => await ViewModel.RunGuidedSetupAsync();
+
+    private async void OnProviderComboBoxSelectionChanged(object sender, SelectionChangedEventArgs e)
+        => await ViewModel.CommitSelectedProviderAsync();
 
     private async void OnModelComboBoxLostFocus(object sender, RoutedEventArgs e)
         => await ViewModel.CommitSelectedModelAsync();
@@ -78,7 +82,7 @@ public sealed partial class MainWindow : Window
     }
 
     private void OnOpenInstallGuideClicked(object sender, RoutedEventArgs e)
-        => OpenExternal("https://help.openai.com/en/articles/11096431-openai-codex-cli-getting-started");
+        => OpenExternal(ViewModel.InstallGuideUrl);
 
     private void OnAppWindowClosing(AppWindow sender, AppWindowClosingEventArgs args)
     {

@@ -7,8 +7,10 @@
     <Color x:Key="WidgetThinkingTextSweepSoftColor">#BEFFFFFF</Color>
     <Color x:Key="WidgetThinkingTextSweepPeakColor">#EAFFFFFF</Color>
     <SolidColorBrush x:Key="WidgetThinkingTextBrush" Color="{StaticResource WidgetThinkingTextBaseColor}" />
+    <SolidColorBrush x:Key="WidgetWarningTextBrush" Color="#FFF5D86E" />
     <SolidColorBrush x:Key="WidgetErrorTextBrush" Color="#FFFF8A8A" />
     <SolidColorBrush x:Key="WidgetIconBrush" Color="#99FFFFFF" />
+    <SolidColorBrush x:Key="WidgetWarningIconBrush" Color="#FFF5D86E" />
 
     <!-- Material UI Tokens (Floating Command Bar) -->
     <SolidColorBrush x:Key="WidgetBackgroundBrush" Color="#E61A1B23" />

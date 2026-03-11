@@ -18,6 +18,9 @@ public sealed partial class WidgetWindow : Window
     private const int AgentLoopDelayMilliseconds = 450;
     private const int MinVideoStandbyPollMilliseconds = 40000;
     private const int MaxVideoStandbyPollMilliseconds = 65000;
+    private const int MinKnownVideoStandbyPollMilliseconds = 1000;
+    private const int KnownVideoCompletionBufferMilliseconds = 750;
+    private const int MaxKnownVideoStandbyPollMilliseconds = 10 * 60 * 1000;
     private const int LoopTransitionPollMilliseconds = 900;
     private const int MaxLoopTransitionPolls = 7;
     private const int MaxAgentLoopQuestions = 50;
@@ -27,6 +30,7 @@ public sealed partial class WidgetWindow : Window
     private const double VideoSpeedMenuRelativeY = 0.734;
     private const double VideoSpeedOnePointFiveRelativeX = 0.694;
     private const double VideoSpeedOnePointFiveRelativeY = 0.764;
+    private const double VideoPlaybackSpeedMultiplier = 1.5d;
     private const string OcrAnswerPrompt = "Answer the user's question from this OCR text. OCR may contain noise. If it is multiple choice, return only the best option unless a short clarification is necessary. Keep it brief.";
     private const string ScreenshotAnswerPrompt = "Answer the visible question from this screenshot. Use the image as the source of truth, and use any OCR text only as a hint. If it is multiple choice, return only the best option unless a short clarification is necessary. Keep it brief.";
     private const string AgentOcrAnswerPrompt = "Answer the user's question from this OCR text. OCR may contain noise. Return only the exact answer text or option label as shown on screen. No explanation.";
@@ -34,8 +38,8 @@ public sealed partial class WidgetWindow : Window
     private const string VideoDetectionPrompt = "Check whether this screenshot is a video/player state rather than a question screen. Return only VIDEO or NOT_VIDEO. Return VIDEO if you can see player controls such as play/pause, settings/gear, rewind/reverse, progress UI, or a title/interstitial without a visible question.";
     private readonly AppState appState;
     private readonly IAgentClickService agentClickService;
-    private readonly ICodexCliService codexCliService;
     private readonly IOcrService ocrService;
+    private readonly IProviderRuntimeRegistry providerRegistry;
     private readonly IScreenCaptureService screenCaptureService;
     private readonly ISettingsStore settingsStore;
     private readonly Random random = new();
@@ -45,6 +49,7 @@ public sealed partial class WidgetWindow : Window
     private bool wasShowingMessageText;
     private bool wasShowingActionButton;
     private string? activeVideoSignature;
+    private TimeSpan? activeVideoTotalDuration;
     private bool hasHandledCurrentVideoSpeed;
 
     // Drag tracking
@@ -62,19 +67,14 @@ public sealed partial class WidgetWindow : Window
 
         appState = App.CurrentApp.Host.Services.GetRequiredService<AppState>();
         agentClickService = App.CurrentApp.Host.Services.GetRequiredService<IAgentClickService>();
-        codexCliService = App.CurrentApp.Host.Services.GetRequiredService<ICodexCliService>();
         ocrService = App.CurrentApp.Host.Services.GetRequiredService<IOcrService>();
+        providerRegistry = App.CurrentApp.Host.Services.GetRequiredService<IProviderRuntimeRegistry>();
         screenCaptureService = App.CurrentApp.Host.Services.GetRequiredService<IScreenCaptureService>();
         settingsStore = App.CurrentApp.Host.Services.GetRequiredService<ISettingsStore>();
 
         ViewModel.PropertyChanged += (_, e) =>
         {
-            if (e.PropertyName is nameof(ViewModel.ShowActionButton)
-                or nameof(ViewModel.ShowMessage)
-                or nameof(ViewModel.IsBusy))
-            {
-                UpdateVisualState();
-            }
+            UpdateVisualState();
         };
     }
 
@@ -95,6 +95,11 @@ public sealed partial class WidgetWindow : Window
     private Storyboard ThinkingTextShimmerStoryboard
         => (Storyboard)RootGrid.Resources["ThinkingTextShimmerStoryboard"];
 
+    private IProviderRuntime CurrentProviderRuntime => providerRegistry.GetProvider(appState.SelectedProviderId);
+
+    private bool IsOpenCodeProvider
+        => string.Equals(CurrentProviderRuntime.ProviderId, ProviderIds.OpenCode, StringComparison.OrdinalIgnoreCase);
+
     public void InitializeWindow()
     {
         appWindow = this.GetAppWindow();
@@ -107,8 +112,9 @@ public sealed partial class WidgetWindow : Window
         var physicalWidth = (int)Math.Round(368 * scale);
         var physicalHeight = (int)Math.Round(72 * scale);
 
+        var initialPosition = GetVisibleWidgetPosition(physicalWidth, physicalHeight);
         appWindow.Resize(new Windows.Graphics.SizeInt32(physicalWidth, physicalHeight));
-        appWindow.Move(new Windows.Graphics.PointInt32((int)appState.WidgetBounds.X, (int)appState.WidgetBounds.Y));
+        appWindow.Move(initialPosition);
         appWindow.Changed += OnAppWindowChanged;
         appWindow.Closing += OnAppWindowClosing;
 
@@ -210,44 +216,80 @@ public sealed partial class WidgetWindow : Window
 
     private async Task<AnswerResult> RunSingleAnswerAsync()
     {
-        var iteration = await ExecuteAnswerIterationAsync();
+        var iteration = await ExecuteAnswerIterationAsync(showCaptureStatus: true, showOcrStatus: true);
         return iteration.Result;
     }
 
     private async Task<AnswerResult> RunAgentLoopAsync()
     {
         var answeredQuestions = 0;
+        var isFirstIteration = true;
 
         while (answeredQuestions < MaxAgentLoopQuestions)
         {
-            await WaitForVideoToFinishAsync();
+            CaptureLayoutResult? initialCapture = null;
+            if (isFirstIteration)
+            {
+                initialCapture = await CaptureCurrentLayoutUnderCursorAsync(showCaptureStatus: true, showOcrStatus: true);
+            }
+
+            var readySnapshot = await WaitForVideoToFinishAsync(
+                initialCapture?.Layout,
+                showCaptureStatus: !isFirstIteration,
+                showOcrStatus: true);
 
             var currentReasoning = appState.SelectedReasoningEffort;
             AnswerIterationResult? iteration = null;
             OcrLayoutResult? followUpOcr = null;
+            var canReuseInitialCapture = initialCapture is not null
+                && ReferenceEquals(readySnapshot, initialCapture.Layout)
+                && IsLikelyQuestionScreen(initialCapture.Layout)
+                && !ContainsVideoSignal(initialCapture.Layout)
+                && !ContainsResultsSummarySignal(initialCapture.Layout.Text);
 
-            while (true)
+            try
             {
-                iteration = await ExecuteAnswerIterationAsync(currentReasoning);
-                if (!iteration.Result.IsSuccess || !iteration.ClickResult.Clicked)
+                while (true)
                 {
-                    return CreateLoopFinishedResult(answeredQuestions);
+                    iteration = canReuseInitialCapture
+                        ? await ExecuteAnswerIterationAsync(
+                            currentReasoning,
+                            captureOverride: initialCapture!.Capture,
+                            layoutOverride: initialCapture.Layout,
+                            showCaptureStatus: false,
+                            showOcrStatus: false)
+                        : await ExecuteAnswerIterationAsync(
+                            currentReasoning,
+                            showCaptureStatus: false,
+                            showOcrStatus: true);
+                    if (!iteration.Result.IsSuccess || !iteration.ClickResult.Clicked)
+                    {
+                        return CreateLoopFinishedResult(answeredQuestions);
+                    }
+
+                    var questionSignature = BuildLoopSignature(iteration.OcrLayout.Text);
+                    followUpOcr = await WaitForPostClickSnapshotAsync(questionSignature);
+
+                    if (!ContainsSkipSignal(followUpOcr.Text))
+                    {
+                        break;
+                    }
+
+                    if (!TryGetMoreReasoning(currentReasoning, out var strongerReasoning))
+                    {
+                        return CreateLoopFinishedResult(answeredQuestions);
+                    }
+
+                    currentReasoning = strongerReasoning;
+                    canReuseInitialCapture = false;
                 }
-
-                var questionSignature = BuildLoopSignature(iteration.OcrLayout.Text);
-                followUpOcr = await WaitForPostClickSnapshotAsync(questionSignature);
-
-                if (!ContainsSkipSignal(followUpOcr.Text))
+            }
+            finally
+            {
+                if (initialCapture is not null)
                 {
-                    break;
+                    TryDeleteCapture(initialCapture.Capture.ImagePath);
                 }
-
-                if (!TryGetMoreReasoning(currentReasoning, out var strongerReasoning))
-                {
-                    return CreateLoopFinishedResult(answeredQuestions);
-                }
-
-                currentReasoning = strongerReasoning;
             }
 
             if (iteration is null || followUpOcr is null)
@@ -273,24 +315,25 @@ public sealed partial class WidgetWindow : Window
             }
 
             answeredQuestions++;
+            isFirstIteration = false;
         }
 
         return CreateLoopFinishedResult(answeredQuestions);
     }
 
-    private async Task<AnswerIterationResult> ExecuteAnswerIterationAsync(string? reasoningEffortOverride = null)
+    private async Task<AnswerIterationResult> ExecuteAnswerIterationAsync(
+        string? reasoningEffortOverride = null,
+        ScreenCaptureResult? captureOverride = null,
+        OcrLayoutResult? layoutOverride = null,
+        bool showCaptureStatus = true,
+        bool showOcrStatus = true)
     {
-        this.HideWindow();
-        await Task.Delay(120);
-        var capture = await screenCaptureService.CaptureDisplayUnderCursorAsync();
+        var capture = captureOverride ?? await CaptureDisplayUnderCursorWithStatusAsync(showCaptureStatus);
+        var ownsCapture = captureOverride is null;
 
         try
         {
-            this.ShowWin32Window(false);
-            BringToFront();
-            await Task.Delay(50);
-
-            var ocrLayout = await ocrService.ExtractLayoutAsync(capture.ImagePath);
+            var ocrLayout = layoutOverride ?? await ExtractLayoutWithStatusAsync(capture.ImagePath, showOcrStatus);
             var reasoningEffort = string.IsNullOrWhiteSpace(reasoningEffortOverride)
                 ? appState.SelectedReasoningEffort
                 : reasoningEffortOverride;
@@ -314,50 +357,51 @@ public sealed partial class WidgetWindow : Window
         }
         finally
         {
-            TryDeleteCapture(capture.ImagePath);
+            if (ownsCapture)
+            {
+                TryDeleteCapture(capture.ImagePath);
+            }
         }
     }
 
-    private async Task<OcrLayoutResult> CaptureOcrLayoutSnapshotAsync()
+    private async Task<OcrLayoutResult> CaptureOcrLayoutSnapshotAsync(bool showCaptureStatus = true, bool showOcrStatus = true)
     {
-        this.HideWindow();
-        await Task.Delay(120);
-        var capture = await screenCaptureService.CaptureDisplayUnderCursorAsync();
+        var capture = await CaptureDisplayUnderCursorWithStatusAsync(showCaptureStatus);
 
         try
         {
-            return await ocrService.ExtractLayoutAsync(capture.ImagePath);
+            return await ExtractLayoutWithStatusAsync(capture.ImagePath, showOcrStatus);
         }
         finally
         {
-            this.ShowWin32Window(false);
-            BringToFront();
             TryDeleteCapture(capture.ImagePath);
         }
     }
 
-    private async Task<OcrLayoutResult> WaitForVideoToFinishAsync(OcrLayoutResult? initialSnapshot = null)
+    private async Task<OcrLayoutResult> WaitForVideoToFinishAsync(
+        OcrLayoutResult? initialSnapshot = null,
+        bool showCaptureStatus = true,
+        bool showOcrStatus = true)
     {
-        var snapshot = initialSnapshot ?? await CaptureOcrLayoutSnapshotAsync();
+        var snapshot = initialSnapshot ?? await CaptureOcrLayoutSnapshotAsync(showCaptureStatus, showOcrStatus);
         if (ContainsResultsSummarySignal(snapshot.Text))
         {
             return snapshot;
         }
 
         var videoDetected = false;
-        if (!ContainsQuestionSignal(snapshot.Text))
+        if (!IsLikelyQuestionScreen(snapshot))
         {
-            var probe = await CaptureCenteredHoverSnapshotAsync();
+            var probe = await CaptureCenteredHoverSnapshotAsync(showCaptureStatus, showOcrStatus);
             snapshot = probe.OcrLayout;
             videoDetected = probe.VideoDetected;
         }
 
         while (!ContainsResultsSummarySignal(snapshot.Text) && (videoDetected || ContainsVideoSignal(snapshot)))
         {
-            ViewModel.SetVideoStandby();
-            UpdateVisualState();
-            await Task.Delay(GetNextVideoStandbyDelayMilliseconds());
-            var probe = await CaptureCenteredHoverSnapshotAsync();
+            var remaining = GetRemainingVideoDuration(snapshot, hasHandledCurrentVideoSpeed);
+            await WaitWithVideoCountdownAsync(remaining, GetNextVideoStandbyDelayMilliseconds(remaining));
+            var probe = await CaptureCenteredHoverSnapshotAsync(showCaptureStatus, showOcrStatus);
             snapshot = probe.OcrLayout;
             videoDetected = probe.VideoDetected;
         }
@@ -375,8 +419,8 @@ public sealed partial class WidgetWindow : Window
         for (var attempt = 0; attempt < MaxLoopTransitionPolls; attempt++)
         {
             await Task.Delay(attempt == 0 ? AgentLoopDelayMilliseconds : LoopTransitionPollMilliseconds);
-            lastSnapshot = await CaptureOcrLayoutSnapshotAsync();
-            lastSnapshot = await WaitForVideoToFinishAsync(lastSnapshot);
+            lastSnapshot = await CaptureOcrLayoutSnapshotAsync(showCaptureStatus: false, showOcrStatus: true);
+            lastSnapshot = await WaitForVideoToFinishAsync(lastSnapshot, showCaptureStatus: false, showOcrStatus: true);
 
             if (ContainsSkipSignal(lastSnapshot.Text))
             {
@@ -394,7 +438,7 @@ public sealed partial class WidgetWindow : Window
         return lastSnapshot ?? new OcrLayoutResult();
     }
 
-    private async Task<VideoProbeResult> CaptureCenteredHoverSnapshotAsync()
+    private async Task<VideoProbeResult> CaptureCenteredHoverSnapshotAsync(bool showCaptureStatus = true, bool showOcrStatus = true)
     {
         NativeMethods.GetCursorPos(out var currentCursor);
         var monitor = NativeMethods.MonitorFromPoint(currentCursor, NativeMethods.MonitorDefaultToNearest);
@@ -405,31 +449,42 @@ public sealed partial class WidgetWindow : Window
 
         if (!NativeMethods.GetMonitorInfo(monitor, ref monitorInfo))
         {
-            return new VideoProbeResult(await CaptureOcrLayoutSnapshotAsync(), false);
+            return new VideoProbeResult(await CaptureOcrLayoutSnapshotAsync(showCaptureStatus, showOcrStatus), false);
         }
 
         var centerX = monitorInfo.Monitor.Left + ((monitorInfo.Monitor.Right - monitorInfo.Monitor.Left) / 2);
         var centerY = monitorInfo.Monitor.Top + ((monitorInfo.Monitor.Bottom - monitorInfo.Monitor.Top) / 2);
-        this.HideWindow();
-        await Task.Delay(120);
-
-        var probeCapture = await CaptureAtPointAsync(centerX, centerY, clickCenter: true);
+        var probeCapture = await CaptureAtPointWithStatusAsync(centerX, centerY, clickCenter: false, showCaptureStatus);
         try
         {
-            this.ShowWin32Window(false);
-            BringToFront();
-            await Task.Delay(50);
-
-            var snapshot = await ocrService.ExtractLayoutAsync(probeCapture.ImagePath);
+            var snapshot = await ExtractLayoutWithStatusAsync(probeCapture.ImagePath, showOcrStatus);
             var videoDetected = ContainsVideoSignal(snapshot) || await DetectVideoStateFromScreenshotAsync(probeCapture.ImagePath, snapshot.Text);
             if (videoDetected)
             {
-                await EnsureCurrentVideoPlaybackConfiguredAsync(probeCapture, snapshot);
-                this.HideWindow();
-                ClickAbsolutePoint(centerX, centerY);
-                await Task.Delay(220);
-                this.ShowWin32Window(false);
-                BringToFront();
+                if (!HasVisibleVideoPlaybackUi(snapshot))
+                {
+                    await TryClickAbsolutePointAsync(centerX, centerY);
+                    await Task.Delay(260);
+                    var revealedCapture = await CaptureAtPointWithStatusAsync(centerX, centerY, clickCenter: false, showStatus: false);
+                    try
+                    {
+                        snapshot = await ExtractLayoutWithStatusAsync(revealedCapture.ImagePath, showStatus: false);
+                    }
+                    finally
+                    {
+                        TryDeleteCapture(revealedCapture.ImagePath);
+                    }
+                }
+
+                var handledVideoInteraction = await EnsureCurrentVideoPlaybackConfiguredAsync(probeCapture, snapshot);
+                if (handledVideoInteraction)
+                {
+                    this.HideWindow();
+                    ClickAbsolutePoint(centerX, centerY);
+                    await Task.Delay(220);
+                    this.ShowWin32Window(false);
+                    BringToFront();
+                }
             }
 
             return new VideoProbeResult(snapshot, videoDetected);
@@ -460,17 +515,11 @@ public sealed partial class WidgetWindow : Window
             return false;
         }
 
-        this.HideWindow();
-        await Task.Delay(120);
-        var capture = await screenCaptureService.CaptureDisplayUnderCursorAsync();
+        var capture = await CaptureDisplayUnderCursorWithStatusAsync(showStatus: false);
 
         try
         {
-            this.ShowWin32Window(false);
-            BringToFront();
-            await Task.Delay(50);
-
-            var ocrLayout = await ocrService.ExtractLayoutAsync(capture.ImagePath);
+            var ocrLayout = await ExtractLayoutWithStatusAsync(capture.ImagePath, showStatus: true);
             if (!ContainsResultsSummarySignal(ocrLayout.Text))
             {
                 return false;
@@ -495,12 +544,21 @@ public sealed partial class WidgetWindow : Window
 
     private async Task<AnswerResult> GetBestAnswerAsync(string capturePath, string screenText, bool agentModeEnabled, string reasoningEffort)
     {
+        if (IsOpenCodeProvider && string.IsNullOrWhiteSpace(screenText))
+        {
+            return new AnswerResult
+            {
+                Status = AnswerStatus.Failed,
+                ErrorMessage = "Open Code can only answer when local OCR extracts readable question text."
+            };
+        }
+
         if (string.IsNullOrWhiteSpace(screenText))
         {
             return await AnswerFromScreenshotAsync(capturePath, screenText, agentModeEnabled, reasoningEffort);
         }
 
-        var ocrResult = await codexCliService.AnswerAsync(new AnswerRequest
+        var ocrResult = await CurrentProviderRuntime.AnswerAsync(new AnswerRequest
         {
             Model = appState.SelectedModel,
             ScreenText = screenText,
@@ -509,14 +567,33 @@ public sealed partial class WidgetWindow : Window
             RequestedAt = DateTimeOffset.Now
         });
 
-        return NeedsScreenshotFallback(ocrResult)
-            ? await AnswerFromScreenshotAsync(capturePath, screenText, agentModeEnabled, reasoningEffort)
-            : ocrResult;
+        if (!NeedsScreenshotFallback(ocrResult))
+        {
+            return ocrResult;
+        }
+
+        if (IsOpenCodeProvider)
+        {
+            return new AnswerResult
+            {
+                Status = AnswerStatus.Failed,
+                ErrorMessage = "Open Code could not answer from OCR alone. Screenshot-dependent fallback is disabled for this provider."
+            };
+        }
+
+        return await AnswerFromScreenshotAsync(capturePath, screenText, agentModeEnabled, reasoningEffort);
     }
 
     private async Task<bool> DetectVideoStateFromScreenshotAsync(string capturePath, string screenText)
     {
-        var result = await codexCliService.AnswerAsync(new AnswerRequest
+        if (IsOpenCodeProvider)
+        {
+            return ContainsVideoPhrase(screenText)
+                || ContainsVideoControl(screenText)
+                || VideoTimecodeRegex().IsMatch(screenText);
+        }
+
+        var result = await CurrentProviderRuntime.AnswerAsync(new AnswerRequest
         {
             Model = appState.SelectedModel,
             ScreenText = screenText,
@@ -531,84 +608,144 @@ public sealed partial class WidgetWindow : Window
             && !result.Text.Contains("NOT_VIDEO", StringComparison.OrdinalIgnoreCase);
     }
 
-    private async Task EnsureCurrentVideoPlaybackConfiguredAsync(ScreenCaptureResult capture, OcrLayoutResult layout)
+    private async Task<bool> EnsureCurrentVideoPlaybackConfiguredAsync(ScreenCaptureResult capture, OcrLayoutResult layout)
     {
+        if (TryExtractVideoProgress(layout, out var progress)
+            && progress.Current >= progress.Total.Subtract(TimeSpan.FromSeconds(1)))
+        {
+            ResetVideoPlaybackTracking();
+            return false;
+        }
+
         var videoSignature = BuildVideoSignature(layout);
-        if (!string.Equals(activeVideoSignature, videoSignature, StringComparison.Ordinal))
+        var totalDuration = TryExtractVideoProgress(layout, out progress) ? progress.Total : (TimeSpan?)null;
+        var isSameTrackedVideo = string.Equals(activeVideoSignature, videoSignature, StringComparison.Ordinal)
+            && Nullable.Equals(activeVideoTotalDuration, totalDuration);
+
+        if (!isSameTrackedVideo)
         {
             activeVideoSignature = videoSignature;
+            activeVideoTotalDuration = totalDuration;
             hasHandledCurrentVideoSpeed = false;
         }
 
         if (hasHandledCurrentVideoSpeed)
         {
-            return;
+            return false;
         }
 
         hasHandledCurrentVideoSpeed = true;
         await TryConfigureVideoPlaybackSpeedAsync(capture, layout);
+        return true;
     }
 
     private async Task TryConfigureVideoPlaybackSpeedAsync(ScreenCaptureResult capture, OcrLayoutResult layout)
     {
-        if (!await TryClickVideoSettingsGearAsync(capture.Bounds))
+        if (!await TryOpenVideoSettingsMenuAsync(capture.Bounds))
         {
             return;
         }
 
-        await Task.Delay(260);
-        await TryClickVideoSpeedMenuAsync(capture.Bounds);
-        await Task.Delay(260);
-        await TryClickVideoOnePointFiveSpeedAsync(capture.Bounds);
+        await Task.Delay(300);
+        if (!await TryClickVideoMenuEntryAsync(
+                ["speed", "playback speed"],
+                capture.Bounds,
+                fallbackClick: () => TryClickVideoSpeedMenuAsync(capture.Bounds)))
+        {
+            return;
+        }
+
+        await Task.Delay(300);
+        await TryClickVideoMenuEntryAsync(
+            ["1.5x", "1.5 x", "1 5x", "1 5 x", "1.50x", "1.50 x"],
+            capture.Bounds,
+            fallbackClick: () => TryClickVideoOnePointFiveSpeedAsync(capture.Bounds));
+    }
+
+    private async Task<bool> TryOpenVideoSettingsMenuAsync(Rectangle captureBounds)
+    {
+        foreach (var point in GetVideoSettingsGearClickCandidates(captureBounds))
+        {
+            if (!await TryClickAbsolutePointAsync(point.X, point.Y))
+            {
+                continue;
+            }
+
+            await Task.Delay(260);
+            if (await IsVideoSettingsMenuOpenAsync())
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private async Task<bool> TryClickVideoSettingsGearAsync(Rectangle captureBounds)
     {
         var point = GetVideoSettingsGearPoint(captureBounds);
-        this.HideWindow();
-        ClickAbsolutePoint(point.X, point.Y);
-        await Task.Delay(220);
-        this.ShowWin32Window(false);
-        BringToFront();
-        return true;
+        return await TryClickAbsolutePointAsync(point.X, point.Y);
+    }
+
+    private async Task<bool> TryClickVideoMenuEntryAsync(
+        IReadOnlyList<string> targetPhrases,
+        Rectangle fallbackCaptureBounds,
+        Func<Task<bool>> fallbackClick)
+    {
+        CaptureLayoutResult? snapshot = null;
+
+        try
+        {
+            snapshot = await CaptureCurrentLayoutUnderCursorAsync(showCaptureStatus: false, showOcrStatus: false);
+            if (TryFindMatchingRegion(snapshot.Layout, targetPhrases, out var region))
+            {
+                ClickRegion(snapshot.Capture.Bounds, region.Bounds);
+                await Task.Delay(220);
+                return true;
+            }
+        }
+        finally
+        {
+            if (snapshot is not null)
+            {
+                TryDeleteCapture(snapshot.Capture.ImagePath);
+            }
+        }
+
+        return await fallbackClick();
     }
 
     private async Task<bool> TryClickVideoSpeedMenuAsync(Rectangle captureBounds)
     {
         var point = GetVideoSpeedMenuPoint(captureBounds);
-        this.HideWindow();
-        ClickAbsolutePoint(point.X, point.Y);
-        await Task.Delay(220);
-        this.ShowWin32Window(false);
-        BringToFront();
-        return true;
+        return await TryClickAbsolutePointAsync(point.X, point.Y);
     }
 
     private async Task<bool> TryClickVideoOnePointFiveSpeedAsync(Rectangle captureBounds)
     {
         var point = GetVideoOnePointFiveSpeedPoint(captureBounds);
+        return await TryClickAbsolutePointAsync(point.X, point.Y);
+    }
+
+    private async Task<bool> TryClickAbsolutePointAsync(int x, int y)
+    {
         this.HideWindow();
-        ClickAbsolutePoint(point.X, point.Y);
+        ClickAbsolutePoint(x, y);
         await Task.Delay(220);
         this.ShowWin32Window(false);
         BringToFront();
         return true;
     }
 
-    private async Task<CaptureLayoutResult> CaptureCurrentLayoutUnderCursorAsync()
+    private async Task<CaptureLayoutResult> CaptureCurrentLayoutUnderCursorAsync(bool showCaptureStatus = true, bool showOcrStatus = true)
     {
-        this.HideWindow();
-        await Task.Delay(120);
-        var capture = await screenCaptureService.CaptureDisplayUnderCursorAsync();
-        this.ShowWin32Window(false);
-        BringToFront();
-        await Task.Delay(50);
-        var layout = await ocrService.ExtractLayoutAsync(capture.ImagePath);
+        var capture = await CaptureDisplayUnderCursorWithStatusAsync(showCaptureStatus);
+        var layout = await ExtractLayoutWithStatusAsync(capture.ImagePath, showOcrStatus);
         return new CaptureLayoutResult(capture, layout);
     }
 
     private Task<AnswerResult> AnswerFromScreenshotAsync(string capturePath, string screenText, bool agentModeEnabled, string reasoningEffort)
-        => codexCliService.AnswerAsync(new AnswerRequest
+        => CurrentProviderRuntime.AnswerAsync(new AnswerRequest
         {
             Model = appState.SelectedModel,
             ScreenText = screenText,
@@ -652,6 +789,134 @@ public sealed partial class WidgetWindow : Window
             .ToLowerInvariant()
             .Normalize();
 
+    private static bool TryFindMatchingRegion(
+        OcrLayoutResult layout,
+        IReadOnlyList<string> targetPhrases,
+        out OcrTextRegion region)
+    {
+        var normalizedTargets = targetPhrases
+            .Select(NormalizeForMatching)
+            .Where(target => !string.IsNullOrWhiteSpace(target))
+            .ToArray();
+
+        var regions = layout.Lines.Count > 0
+            ? layout.Lines.Where(candidate => !string.IsNullOrWhiteSpace(candidate.Text))
+            : layout.Words.Where(candidate => !string.IsNullOrWhiteSpace(candidate.Text));
+
+        region = regions
+            .Select(candidate => new
+            {
+                Region = candidate,
+                Normalized = NormalizeForMatching(candidate.Text),
+                Score = normalizedTargets.Max(target => ScoreMenuCandidate(candidate.Text, NormalizeForMatching(candidate.Text), target))
+            })
+            .Where(candidate => candidate.Score > 0)
+            .OrderByDescending(candidate => candidate.Score)
+            .ThenBy(candidate => candidate.Region.Bounds.Top)
+            .ThenBy(candidate => candidate.Region.Bounds.Left)
+            .Select(candidate => candidate.Region)
+            .FirstOrDefault() ?? new OcrTextRegion();
+
+        return !string.IsNullOrWhiteSpace(region.Text);
+    }
+
+    private static string NormalizeForMatching(string value)
+        => string.Join(
+            ' ',
+            value.ToLowerInvariant()
+                .Replace('×', 'x')
+                .Split(['\r', '\n', '\t', ' ', '.', ',', ':', ';', '-', '_', '(', ')', '[', ']'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+
+    private static double GetTokenOverlapScore(string left, string right)
+    {
+        var leftTokens = left.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var rightTokens = right.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (leftTokens.Length == 0 || rightTokens.Length == 0)
+        {
+            return 0;
+        }
+
+        var shared = leftTokens.Intersect(rightTokens, StringComparer.Ordinal).Count();
+        return (double)shared / Math.Max(leftTokens.Length, rightTokens.Length);
+    }
+
+    private static double ScoreMenuCandidate(string rawCandidate, string normalizedCandidate, string normalizedTarget)
+    {
+        if (string.IsNullOrWhiteSpace(normalizedCandidate) || string.IsNullOrWhiteSpace(normalizedTarget))
+        {
+            return 0;
+        }
+
+        if (ContainsForbiddenMenuMismatch(normalizedCandidate, normalizedTarget))
+        {
+            return 0;
+        }
+
+        if (string.Equals(normalizedCandidate, normalizedTarget, StringComparison.Ordinal))
+        {
+            return 1.0;
+        }
+
+        if (normalizedCandidate.StartsWith(normalizedTarget + " ", StringComparison.Ordinal))
+        {
+            return 0.98;
+        }
+
+        if (normalizedCandidate.Contains(" " + normalizedTarget + " ", StringComparison.Ordinal))
+        {
+            return 0.95;
+        }
+
+        if (normalizedTarget.Contains('x'))
+        {
+            return ContainsExactSpeedLabel(rawCandidate, normalizedTarget) ? 0.96 : 0;
+        }
+
+        var overlap = GetTokenOverlapScore(normalizedCandidate, normalizedTarget);
+        return overlap >= 0.999 ? 0.9 : 0;
+    }
+
+    private static bool ContainsForbiddenMenuMismatch(string normalizedCandidate, string normalizedTarget)
+    {
+        if (normalizedTarget.Contains("speed", StringComparison.Ordinal))
+        {
+            if (!normalizedCandidate.Contains("speed", StringComparison.Ordinal))
+            {
+                return true;
+            }
+
+            if (normalizedCandidate.Contains("quality", StringComparison.Ordinal)
+                || normalizedCandidate.Contains("audio", StringComparison.Ordinal)
+                || normalizedCandidate.Contains("captions", StringComparison.Ordinal)
+                || normalizedCandidate.Contains("subtitles", StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        if (normalizedTarget.Contains("1 5x", StringComparison.Ordinal)
+            || normalizedTarget.Contains("1 5 x", StringComparison.Ordinal)
+            || normalizedTarget.Contains("1.5x", StringComparison.Ordinal)
+            || normalizedTarget.Contains("1.50x", StringComparison.Ordinal))
+        {
+            if (!ContainsExactSpeedLabel(normalizedCandidate, "1.5x"))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool ContainsExactSpeedLabel(string candidateText, string targetLabel)
+    {
+        var normalizedTarget = NormalizeForMatching(targetLabel)
+            .Replace(" ", string.Empty, StringComparison.Ordinal);
+        var normalizedCandidate = NormalizeForMatching(candidateText)
+            .Replace(" ", string.Empty, StringComparison.Ordinal);
+        return normalizedCandidate.Contains(normalizedTarget, StringComparison.Ordinal);
+    }
+
     private static string BuildVideoSignature(OcrLayoutResult layout)
     {
         var signatureSource = GetCentralOcrText(layout);
@@ -660,6 +925,8 @@ public sealed partial class WidgetWindow : Window
             signatureSource = layout.Text;
         }
 
+        signatureSource = VideoProgressRangeRegex().Replace(signatureSource, " ");
+        signatureSource = VideoTimecodeRegex().Replace(signatureSource, " ");
         return BuildLoopSignature(signatureSource);
     }
 
@@ -672,18 +939,138 @@ public sealed partial class WidgetWindow : Window
                 && text.Contains("reward", StringComparison.OrdinalIgnoreCase)
                 && text.Contains("accuracy", StringComparison.OrdinalIgnoreCase));
 
-    private int GetNextVideoStandbyDelayMilliseconds()
+    private int GetNextVideoStandbyDelayMilliseconds(TimeSpan? remaining)
     {
+        if (remaining.HasValue)
+        {
+            var knownDelay = (int)Math.Ceiling(remaining.Value.TotalMilliseconds) + KnownVideoCompletionBufferMilliseconds;
+            return Math.Clamp(
+                knownDelay,
+                MinKnownVideoStandbyPollMilliseconds,
+                MaxKnownVideoStandbyPollMilliseconds);
+        }
+
         // Bias toward longer waits while still leaving a meaningful chance of shorter checks.
         var weighted = Math.Max(random.NextDouble(), random.NextDouble());
         return MinVideoStandbyPollMilliseconds
             + (int)Math.Round((MaxVideoStandbyPollMilliseconds - MinVideoStandbyPollMilliseconds) * weighted);
     }
 
+    private async Task WaitWithVideoCountdownAsync(TimeSpan? remaining, int delayMilliseconds)
+    {
+        var remainingDelay = Math.Max(0, delayMilliseconds);
+        if (remainingDelay == 0)
+        {
+            ViewModel.SetVideoStandby(remaining);
+            UpdateVisualState();
+            return;
+        }
+
+        while (remainingDelay > 0)
+        {
+            ViewModel.SetVideoStandby(remaining);
+            UpdateVisualState();
+
+            var step = Math.Min(1000, remainingDelay);
+            await Task.Delay(step);
+            remainingDelay -= step;
+
+            if (remaining.HasValue)
+            {
+                remaining = remaining.Value - TimeSpan.FromMilliseconds(step);
+                if (remaining.Value < TimeSpan.Zero)
+                {
+                    remaining = TimeSpan.Zero;
+                }
+            }
+        }
+    }
+
     private void ResetVideoPlaybackTracking()
     {
         activeVideoSignature = null;
+        activeVideoTotalDuration = null;
         hasHandledCurrentVideoSpeed = false;
+    }
+
+    private static bool TryExtractVideoProgress(OcrLayoutResult layout, out VideoProgress progress)
+    {
+        var source = GetCentralOcrText(layout);
+        if (string.IsNullOrWhiteSpace(source))
+        {
+            source = layout.Text;
+        }
+
+        var match = VideoProgressRangeRegex().Match(source);
+        if (!match.Success)
+        {
+            progress = default;
+            return false;
+        }
+
+        if (!TryParseVideoTimecode(match.Groups["current"].Value, out var current)
+            || !TryParseVideoTimecode(match.Groups["total"].Value, out var total))
+        {
+            progress = default;
+            return false;
+        }
+
+        progress = new VideoProgress(current, total);
+        return true;
+    }
+
+    private static TimeSpan? GetRemainingVideoDuration(OcrLayoutResult layout, bool adjustForPlaybackSpeed)
+    {
+        if (!TryExtractVideoProgress(layout, out var progress))
+        {
+            return null;
+        }
+
+        var remaining = progress.Total - progress.Current;
+        if (remaining < TimeSpan.Zero)
+        {
+            return TimeSpan.Zero;
+        }
+
+        if (!adjustForPlaybackSpeed)
+        {
+            return remaining;
+        }
+
+        var adjustedMilliseconds = remaining.TotalMilliseconds / VideoPlaybackSpeedMultiplier;
+        return adjustedMilliseconds <= 0
+            ? TimeSpan.Zero
+            : TimeSpan.FromMilliseconds(adjustedMilliseconds);
+    }
+
+    private static bool TryParseVideoTimecode(string value, out TimeSpan time)
+    {
+        var parts = value.Split(':', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length is < 2 or > 3)
+        {
+            time = default;
+            return false;
+        }
+
+        if (parts.Length == 2
+            && int.TryParse(parts[0], out var minutes)
+            && int.TryParse(parts[1], out var seconds))
+        {
+            time = new TimeSpan(0, minutes, seconds);
+            return true;
+        }
+
+        if (parts.Length == 3
+            && int.TryParse(parts[0], out var hours)
+            && int.TryParse(parts[1], out var mm)
+            && int.TryParse(parts[2], out var ss))
+        {
+            time = new TimeSpan(hours, mm, ss);
+            return true;
+        }
+
+        time = default;
+        return false;
     }
 
     private static bool ContainsVideoSignal(OcrLayoutResult layout)
@@ -713,6 +1100,11 @@ public sealed partial class WidgetWindow : Window
 
         return ContainsVideoControl(centerText) || ContainsVideoControl(text);
     }
+
+    private static bool HasVisibleVideoPlaybackUi(OcrLayoutResult layout)
+        => TryExtractVideoProgress(layout, out _)
+            || ContainsVideoControl(GetCentralOcrText(layout))
+            || ContainsVideoControl(layout.Text);
 
     private static bool TryGetMoreReasoning(string currentReasoning, out string strongerReasoning)
     {
@@ -840,8 +1232,33 @@ public sealed partial class WidgetWindow : Window
     private static bool ContainsAnswerCue(string text)
         => AnswerCueRegex().IsMatch(text);
 
+    private static bool IsLikelyQuestionScreen(OcrLayoutResult layout)
+    {
+        var text = layout.Text;
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return false;
+        }
+
+        var centerText = GetCentralOcrText(layout);
+        var hasQuestionLanguage = ContainsQuestionSignal(centerText) || ContainsQuestionSignal(text);
+        var answerCueCount = CountAnswerCues(layout);
+        if (answerCueCount >= 2)
+        {
+            return true;
+        }
+
+        return hasQuestionLanguage && answerCueCount >= 1;
+    }
+
+    private static int CountAnswerCues(OcrLayoutResult layout)
+        => layout.Lines.Count(region => !string.IsNullOrWhiteSpace(region.Text) && ContainsAnswerCue(region.Text));
+
     [GeneratedRegex(@"\b\d{1,2}:\d{2}\b")]
     private static partial Regex VideoTimecodeRegex();
+
+    [GeneratedRegex(@"(?<current>\b\d{1,2}:\d{2}(?::\d{2})?\b)\s*/\s*(?<total>\b\d{1,2}:\d{2}(?::\d{2})?\b)")]
+    private static partial Regex VideoProgressRangeRegex();
 
     [GeneratedRegex(@"(^|\s)([A-Da-d][\.\)]|[1-4][\.\)])\s")]
     private static partial Regex AnswerCueRegex();
@@ -883,6 +1300,13 @@ public sealed partial class WidgetWindow : Window
         NativeMethods.SendInput((uint)inputs.Length, inputs, inputSize);
     }
 
+    private static void ClickRegion(Rectangle captureBounds, Rectangle regionBounds)
+    {
+        var x = captureBounds.Left + regionBounds.Left + (regionBounds.Width / 2);
+        var y = captureBounds.Top + regionBounds.Top + (regionBounds.Height / 2);
+        ClickAbsolutePoint(x, y);
+    }
+
     private static NativeMethods.Input CreateMouseInput(int x, int y, uint flags)
         => new()
         {
@@ -908,10 +1332,44 @@ public sealed partial class WidgetWindow : Window
         return (int)Math.Round((value - origin) * 65535d / size);
     }
 
+    private Windows.Graphics.PointInt32 GetVisibleWidgetPosition(int width, int height)
+    {
+        var virtualLeft = NativeMethods.GetSystemMetrics(NativeMethods.SmXvirtualscreen);
+        var virtualTop = NativeMethods.GetSystemMetrics(NativeMethods.SmYvirtualscreen);
+        var virtualWidth = Math.Max(width, NativeMethods.GetSystemMetrics(NativeMethods.SmCxvirtualscreen));
+        var virtualHeight = Math.Max(height, NativeMethods.GetSystemMetrics(NativeMethods.SmCyvirtualscreen));
+        var virtualRight = virtualLeft + virtualWidth;
+        var virtualBottom = virtualTop + virtualHeight;
+
+        var minX = virtualLeft;
+        var minY = virtualTop;
+        var maxX = Math.Max(minX, virtualRight - width);
+        var maxY = Math.Max(minY, virtualBottom - height);
+
+        var x = (int)Math.Round(appState.WidgetBounds.X);
+        var y = (int)Math.Round(appState.WidgetBounds.Y);
+
+        x = Math.Clamp(x, minX, maxX);
+        y = Math.Clamp(y, minY, maxY);
+
+        appState.UpdateWidgetBounds(x, y, width, height);
+        return new Windows.Graphics.PointInt32(x, y);
+    }
+
     private static Point GetVideoSettingsGearPoint(Rectangle bounds)
         => new(
             bounds.Left + (int)(bounds.Width * VideoSettingsGearRelativeX),
             bounds.Top + (int)(bounds.Height * VideoSettingsGearRelativeY));
+
+    private static IEnumerable<Point> GetVideoSettingsGearClickCandidates(Rectangle bounds)
+    {
+        var basePoint = GetVideoSettingsGearPoint(bounds);
+        yield return basePoint;
+        yield return new Point(basePoint.X - 16, basePoint.Y);
+        yield return new Point(basePoint.X + 16, basePoint.Y);
+        yield return new Point(basePoint.X, basePoint.Y - 12);
+        yield return new Point(basePoint.X, basePoint.Y + 12);
+    }
 
     private static Point GetVideoSpeedMenuPoint(Rectangle bounds)
         => new(
@@ -922,6 +1380,27 @@ public sealed partial class WidgetWindow : Window
         => new(
             bounds.Left + (int)(bounds.Width * VideoSpeedOnePointFiveRelativeX),
             bounds.Top + (int)(bounds.Height * VideoSpeedOnePointFiveRelativeY));
+
+    private async Task<bool> IsVideoSettingsMenuOpenAsync()
+    {
+        CaptureLayoutResult? snapshot = null;
+
+        try
+        {
+            snapshot = await CaptureCurrentLayoutUnderCursorAsync(showCaptureStatus: false, showOcrStatus: false);
+            return TryFindMatchingRegion(
+                snapshot.Layout,
+                ["speed", "playback speed", "quality", "audio", "captions", "subtitles"],
+                out _);
+        }
+        finally
+        {
+            if (snapshot is not null)
+            {
+                TryDeleteCapture(snapshot.Capture.ImagePath);
+            }
+        }
+    }
 
 
     private void OnSurfacePointerEntered(object sender, PointerRoutedEventArgs e)
@@ -1091,7 +1570,7 @@ public sealed partial class WidgetWindow : Window
 
     private void UpdateVisualState()
     {
-        var isThinking = ViewModel.IsBusy;
+        var isThinking = ViewModel.ShowStatus;
         var showMessage = ViewModel.ShowMessage && !isThinking;
         var showActionButton = ViewModel.ShowActionButton;
 
@@ -1100,11 +1579,63 @@ public sealed partial class WidgetWindow : Window
         MessageTextBlock.Visibility = showMessage ? Visibility.Visible : Visibility.Collapsed;
         MessageTextBlock.Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources[
             ViewModel.IsError ? "WidgetErrorTextBrush" : "WidgetTextBrush"];
-        
+        StatusProgressRing.Visibility = ViewModel.ShowStatusSpinner ? Visibility.Visible : Visibility.Collapsed;
+        OcrStatusIcon.Visibility = ViewModel.ShowOcrStatusIcon ? Visibility.Visible : Visibility.Collapsed;
+        ScreenshotStatusIcon.Visibility = ViewModel.ShowScreenshotStatusIcon ? Visibility.Visible : Visibility.Collapsed;
+        ThinkingTextBlock.Foreground = ViewModel.UseWarningStatusStyle
+            ? (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["WidgetWarningTextBrush"]
+            : (Microsoft.UI.Xaml.Media.Brush)RootGrid.Resources["WidgetThinkingTextShimmerBrush"];
+
         UpdateThinkingAnimation(isThinking);
         UpdateThinkingReveal(isThinking);
         UpdateMessageReveal(showMessage);
         UpdateActionButtonReveal(showActionButton);
+    }
+
+    private async Task<ScreenCaptureResult> CaptureDisplayUnderCursorWithStatusAsync(bool showStatus = true)
+    {
+        this.HideWindow();
+        await Task.Delay(120);
+        var capture = await screenCaptureService.CaptureDisplayUnderCursorAsync();
+        this.ShowWin32Window(false);
+        BringToFront();
+        if (showStatus)
+        {
+            ViewModel.SetScreenshotTaken();
+            UpdateVisualState();
+            await Task.Delay(180);
+        }
+
+        return capture;
+    }
+
+    private async Task<ScreenCaptureResult> CaptureAtPointWithStatusAsync(int x, int y, bool clickCenter, bool showStatus = true)
+    {
+        this.HideWindow();
+        await Task.Delay(120);
+        var capture = await CaptureAtPointAsync(x, y, clickCenter);
+        this.ShowWin32Window(false);
+        BringToFront();
+        if (showStatus)
+        {
+            ViewModel.SetScreenshotTaken();
+            UpdateVisualState();
+            await Task.Delay(180);
+        }
+
+        return capture;
+    }
+
+    private async Task<OcrLayoutResult> ExtractLayoutWithStatusAsync(string imagePath, bool showStatus = true)
+    {
+        if (showStatus)
+        {
+            ViewModel.SetExtractingText();
+            UpdateVisualState();
+            await Task.Delay(120);
+        }
+
+        return await ocrService.ExtractLayoutAsync(imagePath);
     }
 
     private void UpdateThinkingAnimation(bool isThinking)
@@ -1219,4 +1750,5 @@ public sealed partial class WidgetWindow : Window
     private sealed record AnswerIterationResult(AnswerResult Result, AgentClickResult ClickResult, OcrLayoutResult OcrLayout);
     private sealed record VideoProbeResult(OcrLayoutResult OcrLayout, bool VideoDetected);
     private sealed record CaptureLayoutResult(ScreenCaptureResult Capture, OcrLayoutResult Layout);
+    private readonly record struct VideoProgress(TimeSpan Current, TimeSpan Total);
 }

@@ -5,14 +5,15 @@ public sealed class AppState : ObservableObject
     private readonly SemaphoreSlim persistenceGate = new(1, 1);
 
     private AppSettings settings = new();
-    private CodexPreflightResult preflight = new();
+    private ProviderPreflightResult preflight = new();
+    private string selectedProviderId = ProviderIds.OpenAiCodex;
     private string selectedModel = string.Empty;
     private string selectedReasoningEffort = string.Empty;
     private string lastAnswerSummary = "No answer yet.";
     private string lastAnswerDetail = string.Empty;
     private bool isAnswering;
 
-    public IReadOnlyList<string> RecentModels => settings.RecentModels;
+    public IReadOnlyList<string> RecentModels => GetCurrentSelection().RecentModels;
 
     public bool StartWithWidget
     {
@@ -61,7 +62,7 @@ public sealed class AppState : ObservableObject
 
     public WidgetBounds WidgetBounds => settings.WidgetBounds;
 
-    public CodexPreflightResult Preflight
+    public ProviderPreflightResult Preflight
     {
         get => preflight;
         private set
@@ -69,6 +70,18 @@ public sealed class AppState : ObservableObject
             preflight = value;
             OnPropertyChanged();
             OnPropertyChanged(nameof(CanAnswer));
+        }
+    }
+
+    public string SelectedProviderId
+    {
+        get => selectedProviderId;
+        private set
+        {
+            if (SetProperty(ref selectedProviderId, value))
+            {
+                OnPropertyChanged(nameof(CanAnswer));
+            }
         }
     }
 
@@ -114,36 +127,50 @@ public sealed class AppState : ObservableObject
         }
     }
 
-    public bool CanAnswer => Preflight.IsInstalled && !string.IsNullOrWhiteSpace(SelectedModel) && !IsAnswering;
+    public bool CanAnswer => Preflight.IsReady && !string.IsNullOrWhiteSpace(SelectedModel) && !IsAnswering;
 
-    public async Task InitializeAsync(ISettingsStore settingsStore, ICodexCliService codexCliService, CancellationToken cancellationToken = default)
+    public async Task InitializeAsync(ISettingsStore settingsStore, IProviderRuntimeRegistry providerRegistry, CancellationToken cancellationToken = default)
     {
         settings = await settingsStore.LoadAsync();
-        settings.RecentModels ??= [];
         settings.WidgetBounds ??= new WidgetBounds();
+        MigrateLegacyProviderSelections();
 
-        var configuredModel = await codexCliService.ReadConfiguredModelAsync(cancellationToken);
-        var configuredReasoningEffort = await codexCliService.ReadConfiguredReasoningEffortAsync(cancellationToken);
-        var initialModel = FirstNonEmpty(settings.SelectedModel, settings.LastSuccessfulModel, configuredModel, "gpt-5.4");
-        var initialReasoningEffort = FirstNonEmpty(
-            settings.SelectedReasoningEffort,
-            settings.LastSuccessfulReasoningEffort,
-            configuredReasoningEffort,
-            "low");
+        var initialProviderId = providerRegistry.IsKnownProvider(settings.SelectedProviderId)
+            ? ProviderIds.Normalize(settings.SelectedProviderId)
+            : ProviderIds.OpenAiCodex;
+        SelectedProviderId = initialProviderId;
+        settings.SelectedProviderId = initialProviderId;
 
-        SelectedModel = initialModel;
-        SelectedReasoningEffort = initialReasoningEffort;
-        AddRecentModel(initialModel);
+        await LoadProviderSelectionAsync(providerRegistry.GetProvider(initialProviderId), cancellationToken);
         LastAnswerSummary = "No answer yet.";
         LastAnswerDetail = string.Empty;
 
+        OnPropertyChanged(nameof(SelectedProviderId));
         OnPropertyChanged(nameof(RecentModels));
         OnPropertyChanged(nameof(StartWithWidget));
         OnPropertyChanged(nameof(AgentModeEnabled));
         OnPropertyChanged(nameof(AgentLoopEnabled));
     }
 
-    public void UpdatePreflight(CodexPreflightResult result) => Preflight = result;
+    public async Task SetSelectedProviderAsync(string providerId, IProviderRuntimeRegistry providerRegistry, CancellationToken cancellationToken = default)
+    {
+        var normalizedProviderId = providerRegistry.IsKnownProvider(providerId)
+            ? ProviderIds.Normalize(providerId)
+            : ProviderIds.OpenAiCodex;
+
+        if (string.Equals(SelectedProviderId, normalizedProviderId, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        SelectedProviderId = normalizedProviderId;
+        settings.SelectedProviderId = normalizedProviderId;
+        Preflight = new ProviderPreflightResult();
+        await LoadProviderSelectionAsync(providerRegistry.GetProvider(normalizedProviderId), cancellationToken);
+        OnPropertyChanged(nameof(RecentModels));
+    }
+
+    public void UpdatePreflight(ProviderPreflightResult result) => Preflight = result;
 
     public void BeginAnswer()
     {
@@ -160,8 +187,9 @@ public sealed class AppState : ObservableObject
         {
             LastAnswerSummary = result.Text;
             LastAnswerDetail = result.Text;
-            settings.LastSuccessfulModel = SelectedModel;
-            settings.LastSuccessfulReasoningEffort = SelectedReasoningEffort;
+            var selection = GetCurrentSelection();
+            selection.LastSuccessfulModel = SelectedModel;
+            selection.LastSuccessfulReasoningEffort = SelectedReasoningEffort;
             AddRecentModel(SelectedModel);
         }
         else
@@ -182,7 +210,7 @@ public sealed class AppState : ObservableObject
 
         var trimmed = value.Trim();
         SelectedModel = trimmed;
-        settings.SelectedModel = trimmed;
+        GetCurrentSelection().SelectedModel = trimmed;
         AddRecentModel(trimmed);
         OnPropertyChanged(nameof(RecentModels));
     }
@@ -196,7 +224,7 @@ public sealed class AppState : ObservableObject
 
         var trimmed = value.Trim();
         SelectedReasoningEffort = trimmed;
-        settings.SelectedReasoningEffort = trimmed;
+        GetCurrentSelection().SelectedReasoningEffort = trimmed;
     }
 
     public void UpdateWidgetBounds(double x, double y, double width, double height)
@@ -213,8 +241,10 @@ public sealed class AppState : ObservableObject
 
         try
         {
-            settings.SelectedModel = SelectedModel;
-            settings.SelectedReasoningEffort = SelectedReasoningEffort;
+            settings.SelectedProviderId = SelectedProviderId;
+            var selection = GetCurrentSelection();
+            selection.SelectedModel = SelectedModel;
+            selection.SelectedReasoningEffort = SelectedReasoningEffort;
             await settingsStore.SaveAsync(settings);
         }
         finally
@@ -230,15 +260,88 @@ public sealed class AppState : ObservableObject
             return;
         }
 
-        settings.RecentModels.RemoveAll(existing => string.Equals(existing, model, StringComparison.OrdinalIgnoreCase));
-        settings.RecentModels.Insert(0, model);
+        var recentModels = GetCurrentSelection().RecentModels;
+        recentModels.RemoveAll(existing => string.Equals(existing, model, StringComparison.OrdinalIgnoreCase));
+        recentModels.Insert(0, model);
 
-        if (settings.RecentModels.Count > 8)
+        if (recentModels.Count > 8)
         {
-            settings.RecentModels.RemoveRange(8, settings.RecentModels.Count - 8);
+            recentModels.RemoveRange(8, recentModels.Count - 8);
         }
     }
 
+    private async Task LoadProviderSelectionAsync(IProviderRuntime providerRuntime, CancellationToken cancellationToken)
+    {
+        var selection = GetSelection(providerRuntime.ProviderId);
+        var configuredDefaults = await providerRuntime.ReadConfiguredDefaultsAsync(cancellationToken);
+        var initialModel = FirstNonEmpty(
+            selection.SelectedModel,
+            selection.LastSuccessfulModel,
+            configuredDefaults.SelectedModel,
+            providerRuntime.ProviderId == ProviderIds.OpenAiCodex ? "gpt-5.4" : "ollama/gemma3:4b");
+        var initialReasoningEffort = FirstNonEmpty(
+            selection.SelectedReasoningEffort,
+            selection.LastSuccessfulReasoningEffort,
+            configuredDefaults.SelectedReasoningEffort,
+            providerRuntime.ProviderId == ProviderIds.OpenAiCodex ? "low" : string.Empty);
+
+        SelectedModel = initialModel;
+        SelectedReasoningEffort = initialReasoningEffort;
+        if (!string.IsNullOrWhiteSpace(initialModel))
+        {
+            AddRecentModel(initialModel);
+        }
+    }
+
+    private void MigrateLegacyProviderSelections()
+    {
+        settings.ProviderSelections ??= new Dictionary<string, ProviderSelectionSettings>(StringComparer.OrdinalIgnoreCase);
+        settings.RecentModels ??= [];
+
+        var codexSelection = GetSelection(ProviderIds.OpenAiCodex);
+        if (string.IsNullOrWhiteSpace(codexSelection.SelectedModel) && !string.IsNullOrWhiteSpace(settings.SelectedModel))
+        {
+            codexSelection.SelectedModel = settings.SelectedModel;
+        }
+
+        if (string.IsNullOrWhiteSpace(codexSelection.SelectedReasoningEffort) && !string.IsNullOrWhiteSpace(settings.SelectedReasoningEffort))
+        {
+            codexSelection.SelectedReasoningEffort = settings.SelectedReasoningEffort;
+        }
+
+        if (string.IsNullOrWhiteSpace(codexSelection.LastSuccessfulModel) && !string.IsNullOrWhiteSpace(settings.LastSuccessfulModel))
+        {
+            codexSelection.LastSuccessfulModel = settings.LastSuccessfulModel;
+        }
+
+        if (string.IsNullOrWhiteSpace(codexSelection.LastSuccessfulReasoningEffort) && !string.IsNullOrWhiteSpace(settings.LastSuccessfulReasoningEffort))
+        {
+            codexSelection.LastSuccessfulReasoningEffort = settings.LastSuccessfulReasoningEffort;
+        }
+
+        if (codexSelection.RecentModels.Count == 0 && settings.RecentModels.Count > 0)
+        {
+            codexSelection.RecentModels.AddRange(settings.RecentModels);
+        }
+
+        _ = GetSelection(ProviderIds.OpenCode);
+    }
+
+    private ProviderSelectionSettings GetCurrentSelection() => GetSelection(SelectedProviderId);
+
+    private ProviderSelectionSettings GetSelection(string providerId)
+    {
+        var normalizedProviderId = ProviderIds.Normalize(providerId);
+        if (!settings.ProviderSelections.TryGetValue(normalizedProviderId, out var selection) || selection is null)
+        {
+            selection = new ProviderSelectionSettings();
+            settings.ProviderSelections[normalizedProviderId] = selection;
+        }
+
+        selection.RecentModels ??= [];
+        return selection;
+    }
+
     private static string FirstNonEmpty(params string?[] values)
-        => values.First(value => !string.IsNullOrWhiteSpace(value))!;
+        => values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)) ?? string.Empty;
 }
