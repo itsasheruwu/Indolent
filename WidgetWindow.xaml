@@ -5,6 +5,7 @@
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     xmlns:muxc="using:Microsoft.UI.Xaml.Controls"
+    xmlns:helpers="using:Indolent.Helpers"
     mc:Ignorable="d">
     <Grid
         x:Name="RootGrid"
@@ -51,22 +52,25 @@
                 <DoubleAnimation
                     Storyboard.TargetName="ThinkingTextShimmerTransform"
                     Storyboard.TargetProperty="X"
-                    Duration="0:0:2.4"
-                    From="-1.25"
-                    To="1.25">
+                    Duration="0:0:2.8"
+                    From="-1.0"
+                    To="2.0"
+                    BeginTime="0:0:0.5">
                     <DoubleAnimation.EasingFunction>
-                        <SineEase EasingMode="EaseInOut" />
+                        <CubicEase EasingMode="EaseInOut" />
                     </DoubleAnimation.EasingFunction>
                 </DoubleAnimation>
             </Storyboard>
         </Grid.Resources>
 
-        <Border
+        <helpers:CursorGrid
             x:Name="WidgetSurface"
             HorizontalAlignment="Stretch"
             VerticalAlignment="Stretch"
             PointerEntered="OnSurfacePointerEntered"
-            PointerExited="OnSurfacePointerExited">
+            PointerExited="OnSurfacePointerExited"
+            PointerMoved="OnDragAreaPointerMoved"
+            PointerReleased="OnDragAreaPointerReleased">
             
             <Grid x:Name="SurfaceGrid">
                 <Grid.ColumnDefinitions>
@@ -75,20 +79,20 @@
                 </Grid.ColumnDefinitions>
 
                 <!-- Drag Handle -->
-                <Grid
+                <helpers:DragGrid
                     x:Name="DragHandleArea"
                     Grid.Column="0"
-                    Background="Transparent"
-                    PointerMoved="OnDragAreaPointerMoved"
-                    PointerPressed="OnDragAreaPointerPressed"
-                    PointerReleased="OnDragAreaPointerReleased">
+                    Background="#01000000"
+                    PointerEntered="OnDragHandlePointerEntered"
+                    PointerExited="OnDragHandlePointerExited"
+                    PointerPressed="OnDragAreaPointerPressed">
                     <!-- Subtle grip lines -->
                     <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="3">
                         <Border Width="12" Height="2" CornerRadius="1" Background="{StaticResource WidgetDragHandleBrush}" />
                         <Border Width="12" Height="2" CornerRadius="1" Background="{StaticResource WidgetDragHandleBrush}" />
                         <Border Width="12" Height="2" CornerRadius="1" Background="{StaticResource WidgetDragHandleBrush}" />
                     </StackPanel>
-                </Grid>
+                </helpers:DragGrid>
 
                 <!-- Separator -->
                 <Border
@@ -103,7 +107,7 @@
                 <Grid
                     x:Name="ContentArea"
                     Grid.Column="1"
-                    Background="Transparent"
+                    Background="#01000000"
                     PointerPressed="OnContentAreaPointerPressed"
                     PointerReleased="OnContentAreaPointerReleased">
                     
@@ -123,15 +127,15 @@
                                     <TextBlock.Foreground>
                                         <LinearGradientBrush StartPoint="0,0.5" EndPoint="1,0.5">
                                             <LinearGradientBrush.RelativeTransform>
-                                                <TranslateTransform
-                                                    x:Name="ThinkingTextShimmerTransform"
-                                                    X="-1.25" />
+                                                <TranslateTransform x:Name="ThinkingTextShimmerTransform" X="-1.0" />
                                             </LinearGradientBrush.RelativeTransform>
-                                            <GradientStop Color="#8CFFFFFF" Offset="0" />
-                                            <GradientStop Color="#8CFFFFFF" Offset="0.34" />
-                                            <GradientStop Color="#F2FFFFFF" Offset="0.5" />
-                                            <GradientStop Color="#8CFFFFFF" Offset="0.66" />
-                                            <GradientStop Color="#8CFFFFFF" Offset="1" />
+                                            <GradientStop Color="#80FFFFFF" Offset="0.0" />
+                                            <GradientStop Color="#80FFFFFF" Offset="0.38" />
+                                            <GradientStop Color="#CCFFFFFF" Offset="0.46" />
+                                            <GradientStop Color="#FAFFFFFF" Offset="0.50" />
+                                            <GradientStop Color="#CCFFFFFF" Offset="0.54" />
+                                            <GradientStop Color="#80FFFFFF" Offset="0.62" />
+                                            <GradientStop Color="#80FFFFFF" Offset="1.0" />
                                         </LinearGradientBrush>
                                     </TextBlock.Foreground>
                                 </TextBlock>
@@ -170,6 +174,6 @@
                     Opacity="0"
                     Visibility="Collapsed" />
             </Grid>
-        </Border>
+        </helpers:CursorGrid>
     </Grid>
 </Window>

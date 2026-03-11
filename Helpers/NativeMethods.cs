@@ -19,7 +19,12 @@ internal static class NativeMethods
     internal const uint SwpNosize = 0x0001;
     internal const uint SwpNoActivate = 0x0010;
     internal const uint SwpFrameChanged = 0x0020;
+    internal const uint ImageCursor = 2;
+    internal const uint LrLoadFromFile = 0x0010;
     
+    internal static readonly IntPtr IdcArrow = new(32512);
+    internal static readonly IntPtr IdcSizeAll = new(32646);
+
     internal const int DwmwaWindowCornerPreference = 33;
     internal const int DwmwaBorderColor = 34;
     internal const int DwmwaVisibleFrameBorderThickness = 37;
@@ -43,6 +48,15 @@ internal static class NativeMethods
 
     [DllImport("user32.dll")]
     internal static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+    [DllImport("user32.dll")]
+    internal static extern IntPtr LoadCursor(IntPtr hInstance, IntPtr lpCursorName);
+
+    [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+    internal static extern IntPtr LoadImage(IntPtr hInst, string name, uint type, int cx, int cy, uint fuLoad);
+
+    [DllImport("user32.dll")]
+    internal static extern IntPtr SetCursor(IntPtr hCursor);
 
     [DllImport("user32.dll")]
     internal static extern uint GetDpiForWindow(IntPtr hWnd);

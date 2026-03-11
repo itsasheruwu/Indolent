@@ -13,8 +13,6 @@ public sealed partial class WidgetWindow : Window
 {
     private const string OcrAnswerPrompt = "Answer the user's question from this OCR text. OCR may contain noise. If it is multiple choice, return the best option first, then a short reason on the same line. Keep it brief.";
     private const string ScreenshotAnswerPrompt = "Answer the visible question from this screenshot. Use the image as the source of truth, and use any OCR text only as a hint. If it is multiple choice, return the best option first, then a short reason on the same line. Keep it brief.";
-    private const double DragThreshold = 3d;
-
     private readonly AppState appState;
     private readonly ICodexCliService codexCliService;
     private readonly IOcrService ocrService;
@@ -27,9 +25,9 @@ public sealed partial class WidgetWindow : Window
     private bool wasShowingActionButton;
 
     // Drag tracking
-    private bool isDragPointerDown;
-    private Windows.Foundation.Point dragPressedPosition;
-    private uint dragPointerId;
+    private bool isDragging;
+    private Windows.Graphics.PointInt32 dragStartWindowPosition;
+    private NativeMethods.NativePoint dragStartCursorPosition;
 
     // Content tracking
     private bool isContentPointerDown;
@@ -294,44 +292,67 @@ public sealed partial class WidgetWindow : Window
         var pointer = e.GetCurrentPoint(DragHandleArea);
         if (!pointer.Properties.IsLeftButtonPressed) return;
 
-        DragHandleArea.CapturePointer(e.Pointer);
-        isDragPointerDown = true;
-        dragPointerId = e.Pointer.PointerId;
-        dragPressedPosition = pointer.Position;
+        // Capture on the root surface so PointerMoved fires even outside the drag column
+        WidgetSurface.CapturePointer(e.Pointer);
+        DragHandleArea.ShowDraggingCursor();
+
+        NativeMethods.GetCursorPos(out dragStartCursorPosition);
+        dragStartWindowPosition = appWindow?.Position
+            ?? new Windows.Graphics.PointInt32((int)appState.WidgetBounds.X, (int)appState.WidgetBounds.Y);
+        isDragging = true;
         e.Handled = true;
+    }
+
+    private void OnDragHandlePointerEntered(object sender, PointerRoutedEventArgs e)
+    {
+        if (!isDragging)
+        {
+            DragHandleArea.ShowHoverCursor();
+        }
+    }
+
+    private void OnDragHandlePointerExited(object sender, PointerRoutedEventArgs e)
+    {
+        if (!isDragging)
+        {
+            DragHandleArea.ClearCursor();
+        }
     }
 
     private void OnDragAreaPointerMoved(object sender, PointerRoutedEventArgs e)
     {
-        if (!isDragPointerDown || e.Pointer.PointerId != dragPointerId) return;
+        if (!isDragging) return;
 
-        var currentPosition = e.GetCurrentPoint(DragHandleArea).Position;
-        var deltaX = currentPosition.X - dragPressedPosition.X;
-        var deltaY = currentPosition.Y - dragPressedPosition.Y;
-        var distanceSquared = (deltaX * deltaX) + (deltaY * deltaY);
+        DragHandleArea.ShowDraggingCursor();
 
-        if (distanceSquared > DragThreshold * DragThreshold)
-        {
-            DragHandleArea.ReleasePointerCaptures();
-            isDragPointerDown = false;
-            BeginWindowDrag();
-        }
+        NativeMethods.GetCursorPos(out var currentCursor);
+        var dx = currentCursor.X - dragStartCursorPosition.X;
+        var dy = currentCursor.Y - dragStartCursorPosition.Y;
+
+        appWindow?.Move(new Windows.Graphics.PointInt32(
+            dragStartWindowPosition.X + dx,
+            dragStartWindowPosition.Y + dy));
+
         e.Handled = true;
     }
 
     private void OnDragAreaPointerReleased(object sender, PointerRoutedEventArgs e)
     {
-        if (!isDragPointerDown || e.Pointer.PointerId != dragPointerId) return;
+        if (!isDragging) return;
 
-        DragHandleArea.ReleasePointerCaptures();
-        isDragPointerDown = false;
+        WidgetSurface.ReleasePointerCaptures();
+        isDragging = false;
+
+        if (IsPointerWithinElement(e, DragHandleArea))
+        {
+            DragHandleArea.ShowHoverCursor();
+        }
+        else
+        {
+            DragHandleArea.ClearCursor();
+        }
+
         e.Handled = true;
-    }
-
-    private void BeginWindowDrag()
-    {
-        NativeMethods.ReleaseCapture();
-        NativeMethods.SendMessage(this.GetWindowHandle(), NativeMethods.WmNclButtonDown, (IntPtr)NativeMethods.HtCaption, IntPtr.Zero);
     }
 
     private void OnContentAreaPointerPressed(object sender, PointerRoutedEventArgs e)
@@ -511,5 +532,14 @@ public sealed partial class WidgetWindow : Window
         }
 
         return false;
+    }
+
+    private static bool IsPointerWithinElement(PointerRoutedEventArgs e, FrameworkElement element)
+    {
+        var point = e.GetCurrentPoint(element).Position;
+        return point.X >= 0
+            && point.Y >= 0
+            && point.X <= element.ActualWidth
+            && point.Y <= element.ActualHeight;
     }
 }
