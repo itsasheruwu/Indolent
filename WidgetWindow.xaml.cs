@@ -2,6 +2,7 @@ using Indolent.Helpers;
 using Indolent.Services;
 using System.Drawing;
 using System.Text.RegularExpressions;
+using System.Threading;
 
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.UI.Windowing;
@@ -43,6 +44,7 @@ public sealed partial class WidgetWindow : Window
     private readonly IScreenCaptureService screenCaptureService;
     private readonly ISettingsStore settingsStore;
     private readonly Random random = new();
+    private CancellationTokenSource? activeAnswerCancellationSource;
 
     private AppWindow? appWindow;
     private bool wasShowingThinkingText;
@@ -180,6 +182,9 @@ public sealed partial class WidgetWindow : Window
             return;
         }
 
+        using var answerCancellationSource = new CancellationTokenSource();
+        activeAnswerCancellationSource = answerCancellationSource;
+
         appState.BeginAnswer();
         ViewModel.SetThinking();
         UpdateVisualState();
@@ -187,11 +192,16 @@ public sealed partial class WidgetWindow : Window
         try
         {
             var result = appState.AgentModeEnabled && appState.AgentLoopEnabled
-                ? await RunAgentLoopAsync()
-                : await RunSingleAnswerAsync();
+                ? await RunAgentLoopAsync(answerCancellationSource.Token)
+                : await RunSingleAnswerAsync(answerCancellationSource.Token);
 
             appState.CompleteAnswer(result);
             ViewModel.SetAnswerResult(result);
+        }
+        catch (OperationCanceledException)
+        {
+            appState.CancelAnswer();
+            UpdateVisualState();
         }
         catch (Exception ex)
         {
@@ -206,6 +216,11 @@ public sealed partial class WidgetWindow : Window
         }
         finally
         {
+            if (ReferenceEquals(activeAnswerCancellationSource, answerCancellationSource))
+            {
+                activeAnswerCancellationSource = null;
+            }
+
             this.ShowWin32Window(false);
             BringToFront();
             UpdateVisualState();
@@ -214,13 +229,18 @@ public sealed partial class WidgetWindow : Window
         }
     }
 
-    private async Task<AnswerResult> RunSingleAnswerAsync()
+    private void CancelActiveAnswer()
     {
-        var iteration = await ExecuteAnswerIterationAsync(showCaptureStatus: true, showOcrStatus: true);
+        activeAnswerCancellationSource?.Cancel();
+    }
+
+    private async Task<AnswerResult> RunSingleAnswerAsync(CancellationToken cancellationToken)
+    {
+        var iteration = await ExecuteAnswerIterationAsync(showCaptureStatus: true, showOcrStatus: true, cancellationToken: cancellationToken);
         return iteration.Result;
     }
 
-    private async Task<AnswerResult> RunAgentLoopAsync()
+    private async Task<AnswerResult> RunAgentLoopAsync(CancellationToken cancellationToken)
     {
         var answeredQuestions = 0;
         var isFirstIteration = true;
@@ -230,13 +250,14 @@ public sealed partial class WidgetWindow : Window
             CaptureLayoutResult? initialCapture = null;
             if (isFirstIteration)
             {
-                initialCapture = await CaptureCurrentLayoutUnderCursorAsync(showCaptureStatus: true, showOcrStatus: true);
+                initialCapture = await CaptureCurrentLayoutUnderCursorAsync(showCaptureStatus: true, showOcrStatus: true, cancellationToken: cancellationToken);
             }
 
             var readySnapshot = await WaitForVideoToFinishAsync(
                 initialCapture?.Layout,
                 showCaptureStatus: !isFirstIteration,
-                showOcrStatus: true);
+                showOcrStatus: true,
+                cancellationToken: cancellationToken);
 
             var currentReasoning = appState.SelectedReasoningEffort;
             AnswerIterationResult? iteration = null;
@@ -257,18 +278,20 @@ public sealed partial class WidgetWindow : Window
                             captureOverride: initialCapture!.Capture,
                             layoutOverride: initialCapture.Layout,
                             showCaptureStatus: false,
-                            showOcrStatus: false)
+                            showOcrStatus: false,
+                            cancellationToken: cancellationToken)
                         : await ExecuteAnswerIterationAsync(
                             currentReasoning,
                             showCaptureStatus: false,
-                            showOcrStatus: true);
+                            showOcrStatus: true,
+                            cancellationToken: cancellationToken);
                     if (!iteration.Result.IsSuccess || !iteration.ClickResult.Clicked)
                     {
                         return CreateLoopFinishedResult(answeredQuestions);
                     }
 
                     var questionSignature = BuildLoopSignature(iteration.OcrLayout.Text);
-                    followUpOcr = await WaitForPostClickSnapshotAsync(questionSignature);
+                    followUpOcr = await WaitForPostClickSnapshotAsync(questionSignature, cancellationToken);
 
                     if (!ContainsSkipSignal(followUpOcr.Text))
                     {
@@ -299,12 +322,12 @@ public sealed partial class WidgetWindow : Window
 
             if (ContainsResultsSummarySignal(followUpOcr.Text))
             {
-                if (!await TryAdvanceResultsSummaryAsync(followUpOcr))
+                if (!await TryAdvanceResultsSummaryAsync(followUpOcr, cancellationToken))
                 {
                     return CreateLoopFinishedResult(answeredQuestions);
                 }
 
-                followUpOcr = await WaitForPostClickSnapshotAsync(BuildLoopSignature(followUpOcr.Text));
+                followUpOcr = await WaitForPostClickSnapshotAsync(BuildLoopSignature(followUpOcr.Text), cancellationToken);
             }
 
             var currentSignature = BuildLoopSignature(followUpOcr.Text);
@@ -326,18 +349,20 @@ public sealed partial class WidgetWindow : Window
         ScreenCaptureResult? captureOverride = null,
         OcrLayoutResult? layoutOverride = null,
         bool showCaptureStatus = true,
-        bool showOcrStatus = true)
+        bool showOcrStatus = true,
+        CancellationToken cancellationToken = default)
     {
-        var capture = captureOverride ?? await CaptureDisplayUnderCursorWithStatusAsync(showCaptureStatus);
+        cancellationToken.ThrowIfCancellationRequested();
+        var capture = captureOverride ?? await CaptureDisplayUnderCursorWithStatusAsync(showCaptureStatus, cancellationToken: cancellationToken);
         var ownsCapture = captureOverride is null;
 
         try
         {
-            var ocrLayout = layoutOverride ?? await ExtractLayoutWithStatusAsync(capture.ImagePath, showOcrStatus);
+            var ocrLayout = layoutOverride ?? await ExtractLayoutWithStatusAsync(capture.ImagePath, showOcrStatus, cancellationToken: cancellationToken);
             var reasoningEffort = string.IsNullOrWhiteSpace(reasoningEffortOverride)
                 ? appState.SelectedReasoningEffort
                 : reasoningEffortOverride;
-            var result = await GetBestAnswerAsync(capture.ImagePath, ocrLayout.Text, appState.AgentModeEnabled, reasoningEffort);
+            var result = await GetBestAnswerAsync(capture.ImagePath, ocrLayout.Text, appState.AgentModeEnabled, reasoningEffort, cancellationToken);
             var clickResult = new AgentClickResult();
 
             if (appState.AgentModeEnabled && result.IsSuccess)
@@ -348,7 +373,8 @@ public sealed partial class WidgetWindow : Window
                     capture,
                     ocrLayout,
                     appState.SelectedModel,
-                    reasoningEffort);
+                    reasoningEffort,
+                    cancellationToken: cancellationToken);
                 this.ShowWin32Window(false);
                 BringToFront();
             }
@@ -364,13 +390,13 @@ public sealed partial class WidgetWindow : Window
         }
     }
 
-    private async Task<OcrLayoutResult> CaptureOcrLayoutSnapshotAsync(bool showCaptureStatus = true, bool showOcrStatus = true)
+    private async Task<OcrLayoutResult> CaptureOcrLayoutSnapshotAsync(bool showCaptureStatus = true, bool showOcrStatus = true, CancellationToken cancellationToken = default)
     {
-        var capture = await CaptureDisplayUnderCursorWithStatusAsync(showCaptureStatus);
+        var capture = await CaptureDisplayUnderCursorWithStatusAsync(showCaptureStatus, cancellationToken: cancellationToken);
 
         try
         {
-            return await ExtractLayoutWithStatusAsync(capture.ImagePath, showOcrStatus);
+            return await ExtractLayoutWithStatusAsync(capture.ImagePath, showOcrStatus, cancellationToken: cancellationToken);
         }
         finally
         {
@@ -381,9 +407,10 @@ public sealed partial class WidgetWindow : Window
     private async Task<OcrLayoutResult> WaitForVideoToFinishAsync(
         OcrLayoutResult? initialSnapshot = null,
         bool showCaptureStatus = true,
-        bool showOcrStatus = true)
+        bool showOcrStatus = true,
+        CancellationToken cancellationToken = default)
     {
-        var snapshot = initialSnapshot ?? await CaptureOcrLayoutSnapshotAsync(showCaptureStatus, showOcrStatus);
+        var snapshot = initialSnapshot ?? await CaptureOcrLayoutSnapshotAsync(showCaptureStatus, showOcrStatus, cancellationToken: cancellationToken);
         if (ContainsResultsSummarySignal(snapshot.Text))
         {
             return snapshot;
@@ -392,7 +419,7 @@ public sealed partial class WidgetWindow : Window
         var videoDetected = false;
         if (!IsLikelyQuestionScreen(snapshot))
         {
-            var probe = await CaptureCenteredHoverSnapshotAsync(showCaptureStatus, showOcrStatus);
+            var probe = await CaptureCenteredHoverSnapshotAsync(showCaptureStatus, showOcrStatus, cancellationToken: cancellationToken);
             snapshot = probe.OcrLayout;
             videoDetected = probe.VideoDetected;
         }
@@ -400,8 +427,8 @@ public sealed partial class WidgetWindow : Window
         while (!ContainsResultsSummarySignal(snapshot.Text) && (videoDetected || ContainsVideoSignal(snapshot)))
         {
             var remaining = GetRemainingVideoDuration(snapshot, hasHandledCurrentVideoSpeed);
-            await WaitWithVideoCountdownAsync(remaining, GetNextVideoStandbyDelayMilliseconds(remaining));
-            var probe = await CaptureCenteredHoverSnapshotAsync(showCaptureStatus, showOcrStatus);
+            await WaitWithVideoCountdownAsync(remaining, GetNextVideoStandbyDelayMilliseconds(remaining), cancellationToken: cancellationToken);
+            var probe = await CaptureCenteredHoverSnapshotAsync(showCaptureStatus, showOcrStatus, cancellationToken: cancellationToken);
             snapshot = probe.OcrLayout;
             videoDetected = probe.VideoDetected;
         }
@@ -412,15 +439,15 @@ public sealed partial class WidgetWindow : Window
         return snapshot;
     }
 
-    private async Task<OcrLayoutResult> WaitForPostClickSnapshotAsync(string questionSignature)
+    private async Task<OcrLayoutResult> WaitForPostClickSnapshotAsync(string questionSignature, CancellationToken cancellationToken)
     {
         OcrLayoutResult? lastSnapshot = null;
 
         for (var attempt = 0; attempt < MaxLoopTransitionPolls; attempt++)
         {
-            await Task.Delay(attempt == 0 ? AgentLoopDelayMilliseconds : LoopTransitionPollMilliseconds);
-            lastSnapshot = await CaptureOcrLayoutSnapshotAsync(showCaptureStatus: false, showOcrStatus: true);
-            lastSnapshot = await WaitForVideoToFinishAsync(lastSnapshot, showCaptureStatus: false, showOcrStatus: true);
+            await Task.Delay(attempt == 0 ? AgentLoopDelayMilliseconds : LoopTransitionPollMilliseconds, cancellationToken);
+            lastSnapshot = await CaptureOcrLayoutSnapshotAsync(showCaptureStatus: false, showOcrStatus: true, cancellationToken: cancellationToken);
+            lastSnapshot = await WaitForVideoToFinishAsync(lastSnapshot, showCaptureStatus: false, showOcrStatus: true, cancellationToken: cancellationToken);
 
             if (ContainsSkipSignal(lastSnapshot.Text))
             {
@@ -438,7 +465,7 @@ public sealed partial class WidgetWindow : Window
         return lastSnapshot ?? new OcrLayoutResult();
     }
 
-    private async Task<VideoProbeResult> CaptureCenteredHoverSnapshotAsync(bool showCaptureStatus = true, bool showOcrStatus = true)
+    private async Task<VideoProbeResult> CaptureCenteredHoverSnapshotAsync(bool showCaptureStatus = true, bool showOcrStatus = true, CancellationToken cancellationToken = default)
     {
         NativeMethods.GetCursorPos(out var currentCursor);
         var monitor = NativeMethods.MonitorFromPoint(currentCursor, NativeMethods.MonitorDefaultToNearest);
@@ -449,26 +476,26 @@ public sealed partial class WidgetWindow : Window
 
         if (!NativeMethods.GetMonitorInfo(monitor, ref monitorInfo))
         {
-            return new VideoProbeResult(await CaptureOcrLayoutSnapshotAsync(showCaptureStatus, showOcrStatus), false);
+            return new VideoProbeResult(await CaptureOcrLayoutSnapshotAsync(showCaptureStatus, showOcrStatus, cancellationToken: cancellationToken), false);
         }
 
         var centerX = monitorInfo.Monitor.Left + ((monitorInfo.Monitor.Right - monitorInfo.Monitor.Left) / 2);
         var centerY = monitorInfo.Monitor.Top + ((monitorInfo.Monitor.Bottom - monitorInfo.Monitor.Top) / 2);
-        var probeCapture = await CaptureAtPointWithStatusAsync(centerX, centerY, clickCenter: false, showCaptureStatus);
+        var probeCapture = await CaptureAtPointWithStatusAsync(centerX, centerY, clickCenter: false, showCaptureStatus: showCaptureStatus, cancellationToken: cancellationToken);
         try
         {
-            var snapshot = await ExtractLayoutWithStatusAsync(probeCapture.ImagePath, showOcrStatus);
-            var videoDetected = ContainsVideoSignal(snapshot) || await DetectVideoStateFromScreenshotAsync(probeCapture.ImagePath, snapshot.Text);
+            var snapshot = await ExtractLayoutWithStatusAsync(probeCapture.ImagePath, showOcrStatus, cancellationToken: cancellationToken);
+            var videoDetected = ContainsVideoSignal(snapshot) || await DetectVideoStateFromScreenshotAsync(probeCapture.ImagePath, snapshot.Text, cancellationToken: cancellationToken);
             if (videoDetected)
             {
                 if (!HasVisibleVideoPlaybackUi(snapshot))
                 {
-                    await TryClickAbsolutePointAsync(centerX, centerY);
-                    await Task.Delay(260);
-                    var revealedCapture = await CaptureAtPointWithStatusAsync(centerX, centerY, clickCenter: false, showStatus: false);
+                    await TryClickAbsolutePointAsync(centerX, centerY, cancellationToken);
+                    await Task.Delay(260, cancellationToken);
+                    var revealedCapture = await CaptureAtPointWithStatusAsync(centerX, centerY, clickCenter: false, showStatus: false, cancellationToken: cancellationToken);
                     try
                     {
-                        snapshot = await ExtractLayoutWithStatusAsync(revealedCapture.ImagePath, showStatus: false);
+                        snapshot = await ExtractLayoutWithStatusAsync(revealedCapture.ImagePath, showStatus: false, cancellationToken: cancellationToken);
                     }
                     finally
                     {
@@ -476,12 +503,12 @@ public sealed partial class WidgetWindow : Window
                     }
                 }
 
-                var handledVideoInteraction = await EnsureCurrentVideoPlaybackConfiguredAsync(probeCapture, snapshot);
+                var handledVideoInteraction = await EnsureCurrentVideoPlaybackConfiguredAsync(probeCapture, snapshot, cancellationToken: cancellationToken);
                 if (handledVideoInteraction)
                 {
                     this.HideWindow();
                     ClickAbsolutePoint(centerX, centerY);
-                    await Task.Delay(220);
+                    await Task.Delay(220, cancellationToken);
                     this.ShowWin32Window(false);
                     BringToFront();
                 }
@@ -495,31 +522,32 @@ public sealed partial class WidgetWindow : Window
         }
     }
 
-    private async Task<ScreenCaptureResult> CaptureAtPointAsync(int x, int y, bool clickCenter)
+    private async Task<ScreenCaptureResult> CaptureAtPointAsync(int x, int y, bool clickCenter, CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         NativeMethods.SetCursorPos(x, y);
-        await Task.Delay(180);
+        await Task.Delay(180, cancellationToken);
         if (clickCenter)
         {
             ClickAbsolutePoint(x, y);
-            await Task.Delay(320);
+            await Task.Delay(320, cancellationToken);
         }
 
-        return await screenCaptureService.CaptureDisplayUnderCursorAsync();
+        return await screenCaptureService.CaptureDisplayUnderCursorAsync(cancellationToken);
     }
 
-    private async Task<bool> TryAdvanceResultsSummaryAsync(OcrLayoutResult currentLayout)
+    private async Task<bool> TryAdvanceResultsSummaryAsync(OcrLayoutResult currentLayout, CancellationToken cancellationToken)
     {
         if (!ContainsResultsSummarySignal(currentLayout.Text))
         {
             return false;
         }
 
-        var capture = await CaptureDisplayUnderCursorWithStatusAsync(showStatus: false);
+        var capture = await CaptureDisplayUnderCursorWithStatusAsync(showStatus: false, cancellationToken: cancellationToken);
 
         try
         {
-            var ocrLayout = await ExtractLayoutWithStatusAsync(capture.ImagePath, showStatus: true);
+            var ocrLayout = await ExtractLayoutWithStatusAsync(capture.ImagePath, showStatus: true, cancellationToken: cancellationToken);
             if (!ContainsResultsSummarySignal(ocrLayout.Text))
             {
                 return false;
@@ -531,7 +559,8 @@ public sealed partial class WidgetWindow : Window
                 capture,
                 ocrLayout,
                 appState.SelectedModel,
-                appState.SelectedReasoningEffort);
+                appState.SelectedReasoningEffort,
+                cancellationToken: cancellationToken);
             this.ShowWin32Window(false);
             BringToFront();
             return clickResult.Clicked;
@@ -542,7 +571,7 @@ public sealed partial class WidgetWindow : Window
         }
     }
 
-    private async Task<AnswerResult> GetBestAnswerAsync(string capturePath, string screenText, bool agentModeEnabled, string reasoningEffort)
+    private async Task<AnswerResult> GetBestAnswerAsync(string capturePath, string screenText, bool agentModeEnabled, string reasoningEffort, CancellationToken cancellationToken)
     {
         if (IsOpenCodeProvider && string.IsNullOrWhiteSpace(screenText))
         {
@@ -555,7 +584,7 @@ public sealed partial class WidgetWindow : Window
 
         if (string.IsNullOrWhiteSpace(screenText))
         {
-            return await AnswerFromScreenshotAsync(capturePath, screenText, agentModeEnabled, reasoningEffort);
+            return await AnswerFromScreenshotAsync(capturePath, screenText, agentModeEnabled, reasoningEffort, cancellationToken);
         }
 
         var ocrResult = await CurrentProviderRuntime.AnswerAsync(new AnswerRequest
@@ -565,7 +594,7 @@ public sealed partial class WidgetWindow : Window
             Prompt = agentModeEnabled ? AgentOcrAnswerPrompt : OcrAnswerPrompt,
             ReasoningEffort = reasoningEffort,
             RequestedAt = DateTimeOffset.Now
-        });
+        }, cancellationToken);
 
         if (!NeedsScreenshotFallback(ocrResult))
         {
@@ -581,10 +610,10 @@ public sealed partial class WidgetWindow : Window
             };
         }
 
-        return await AnswerFromScreenshotAsync(capturePath, screenText, agentModeEnabled, reasoningEffort);
+        return await AnswerFromScreenshotAsync(capturePath, screenText, agentModeEnabled, reasoningEffort, cancellationToken);
     }
 
-    private async Task<bool> DetectVideoStateFromScreenshotAsync(string capturePath, string screenText)
+    private async Task<bool> DetectVideoStateFromScreenshotAsync(string capturePath, string screenText, CancellationToken cancellationToken)
     {
         if (IsOpenCodeProvider)
         {
@@ -601,14 +630,14 @@ public sealed partial class WidgetWindow : Window
             Prompt = VideoDetectionPrompt,
             ReasoningEffort = "low",
             RequestedAt = DateTimeOffset.Now
-        });
+        }, cancellationToken);
 
         return result.IsSuccess
             && result.Text.Contains("VIDEO", StringComparison.OrdinalIgnoreCase)
             && !result.Text.Contains("NOT_VIDEO", StringComparison.OrdinalIgnoreCase);
     }
 
-    private async Task<bool> EnsureCurrentVideoPlaybackConfiguredAsync(ScreenCaptureResult capture, OcrLayoutResult layout)
+    private async Task<bool> EnsureCurrentVideoPlaybackConfiguredAsync(ScreenCaptureResult capture, OcrLayoutResult layout, CancellationToken cancellationToken)
     {
         if (TryExtractVideoProgress(layout, out var progress)
             && progress.Current >= progress.Total.Subtract(TimeSpan.FromSeconds(1)))
@@ -635,44 +664,46 @@ public sealed partial class WidgetWindow : Window
         }
 
         hasHandledCurrentVideoSpeed = true;
-        await TryConfigureVideoPlaybackSpeedAsync(capture, layout);
+        await TryConfigureVideoPlaybackSpeedAsync(capture, layout, cancellationToken: cancellationToken);
         return true;
     }
 
-    private async Task TryConfigureVideoPlaybackSpeedAsync(ScreenCaptureResult capture, OcrLayoutResult layout)
+    private async Task TryConfigureVideoPlaybackSpeedAsync(ScreenCaptureResult capture, OcrLayoutResult layout, CancellationToken cancellationToken)
     {
-        if (!await TryOpenVideoSettingsMenuAsync(capture.Bounds))
+        if (!await TryOpenVideoSettingsMenuAsync(capture.Bounds, cancellationToken: cancellationToken))
         {
             return;
         }
 
-        await Task.Delay(300);
+        await Task.Delay(300, cancellationToken);
         if (!await TryClickVideoMenuEntryAsync(
                 ["speed", "playback speed"],
                 capture.Bounds,
-                fallbackClick: () => TryClickVideoSpeedMenuAsync(capture.Bounds)))
+                fallbackClick: () => TryClickVideoSpeedMenuAsync(capture.Bounds, cancellationToken),
+                cancellationToken: cancellationToken))
         {
             return;
         }
 
-        await Task.Delay(300);
+        await Task.Delay(300, cancellationToken);
         await TryClickVideoMenuEntryAsync(
             ["1.5x", "1.5 x", "1 5x", "1 5 x", "1.50x", "1.50 x"],
             capture.Bounds,
-            fallbackClick: () => TryClickVideoOnePointFiveSpeedAsync(capture.Bounds));
+            fallbackClick: () => TryClickVideoOnePointFiveSpeedAsync(capture.Bounds, cancellationToken),
+            cancellationToken: cancellationToken);
     }
 
-    private async Task<bool> TryOpenVideoSettingsMenuAsync(Rectangle captureBounds)
+    private async Task<bool> TryOpenVideoSettingsMenuAsync(Rectangle captureBounds, CancellationToken cancellationToken)
     {
         foreach (var point in GetVideoSettingsGearClickCandidates(captureBounds))
         {
-            if (!await TryClickAbsolutePointAsync(point.X, point.Y))
+            if (!await TryClickAbsolutePointAsync(point.X, point.Y, cancellationToken: cancellationToken))
             {
                 continue;
             }
 
-            await Task.Delay(260);
-            if (await IsVideoSettingsMenuOpenAsync())
+            await Task.Delay(260, cancellationToken);
+            if (await IsVideoSettingsMenuOpenAsync(cancellationToken: cancellationToken))
             {
                 return true;
             }
@@ -681,26 +712,27 @@ public sealed partial class WidgetWindow : Window
         return false;
     }
 
-    private async Task<bool> TryClickVideoSettingsGearAsync(Rectangle captureBounds)
+    private async Task<bool> TryClickVideoSettingsGearAsync(Rectangle captureBounds, CancellationToken cancellationToken)
     {
         var point = GetVideoSettingsGearPoint(captureBounds);
-        return await TryClickAbsolutePointAsync(point.X, point.Y);
+        return await TryClickAbsolutePointAsync(point.X, point.Y, cancellationToken: cancellationToken);
     }
 
     private async Task<bool> TryClickVideoMenuEntryAsync(
         IReadOnlyList<string> targetPhrases,
         Rectangle fallbackCaptureBounds,
-        Func<Task<bool>> fallbackClick)
+        Func<Task<bool>> fallbackClick,
+        CancellationToken cancellationToken)
     {
         CaptureLayoutResult? snapshot = null;
 
         try
         {
-            snapshot = await CaptureCurrentLayoutUnderCursorAsync(showCaptureStatus: false, showOcrStatus: false);
+            snapshot = await CaptureCurrentLayoutUnderCursorAsync(showCaptureStatus: false, showOcrStatus: false, cancellationToken: cancellationToken);
             if (TryFindMatchingRegion(snapshot.Layout, targetPhrases, out var region))
             {
                 ClickRegion(snapshot.Capture.Bounds, region.Bounds);
-                await Task.Delay(220);
+                await Task.Delay(220, cancellationToken);
                 return true;
             }
         }
@@ -715,36 +747,37 @@ public sealed partial class WidgetWindow : Window
         return await fallbackClick();
     }
 
-    private async Task<bool> TryClickVideoSpeedMenuAsync(Rectangle captureBounds)
+    private async Task<bool> TryClickVideoSpeedMenuAsync(Rectangle captureBounds, CancellationToken cancellationToken)
     {
         var point = GetVideoSpeedMenuPoint(captureBounds);
-        return await TryClickAbsolutePointAsync(point.X, point.Y);
+        return await TryClickAbsolutePointAsync(point.X, point.Y, cancellationToken: cancellationToken);
     }
 
-    private async Task<bool> TryClickVideoOnePointFiveSpeedAsync(Rectangle captureBounds)
+    private async Task<bool> TryClickVideoOnePointFiveSpeedAsync(Rectangle captureBounds, CancellationToken cancellationToken)
     {
         var point = GetVideoOnePointFiveSpeedPoint(captureBounds);
-        return await TryClickAbsolutePointAsync(point.X, point.Y);
+        return await TryClickAbsolutePointAsync(point.X, point.Y, cancellationToken: cancellationToken);
     }
 
-    private async Task<bool> TryClickAbsolutePointAsync(int x, int y)
+    private async Task<bool> TryClickAbsolutePointAsync(int x, int y, CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         this.HideWindow();
         ClickAbsolutePoint(x, y);
-        await Task.Delay(220);
+        await Task.Delay(220, cancellationToken);
         this.ShowWin32Window(false);
         BringToFront();
         return true;
     }
 
-    private async Task<CaptureLayoutResult> CaptureCurrentLayoutUnderCursorAsync(bool showCaptureStatus = true, bool showOcrStatus = true)
+    private async Task<CaptureLayoutResult> CaptureCurrentLayoutUnderCursorAsync(bool showCaptureStatus = true, bool showOcrStatus = true, CancellationToken cancellationToken = default)
     {
-        var capture = await CaptureDisplayUnderCursorWithStatusAsync(showCaptureStatus);
-        var layout = await ExtractLayoutWithStatusAsync(capture.ImagePath, showOcrStatus);
+        var capture = await CaptureDisplayUnderCursorWithStatusAsync(showCaptureStatus, cancellationToken: cancellationToken);
+        var layout = await ExtractLayoutWithStatusAsync(capture.ImagePath, showOcrStatus, cancellationToken: cancellationToken);
         return new CaptureLayoutResult(capture, layout);
     }
 
-    private Task<AnswerResult> AnswerFromScreenshotAsync(string capturePath, string screenText, bool agentModeEnabled, string reasoningEffort)
+    private Task<AnswerResult> AnswerFromScreenshotAsync(string capturePath, string screenText, bool agentModeEnabled, string reasoningEffort, CancellationToken cancellationToken)
         => CurrentProviderRuntime.AnswerAsync(new AnswerRequest
         {
             Model = appState.SelectedModel,
@@ -753,7 +786,7 @@ public sealed partial class WidgetWindow : Window
             Prompt = agentModeEnabled ? AgentScreenshotAnswerPrompt : ScreenshotAnswerPrompt,
             ReasoningEffort = reasoningEffort,
             RequestedAt = DateTimeOffset.Now
-        });
+        }, cancellationToken);
 
     private static bool NeedsScreenshotFallback(AnswerResult result)
     {
@@ -956,7 +989,7 @@ public sealed partial class WidgetWindow : Window
             + (int)Math.Round((MaxVideoStandbyPollMilliseconds - MinVideoStandbyPollMilliseconds) * weighted);
     }
 
-    private async Task WaitWithVideoCountdownAsync(TimeSpan? remaining, int delayMilliseconds)
+    private async Task WaitWithVideoCountdownAsync(TimeSpan? remaining, int delayMilliseconds, CancellationToken cancellationToken)
     {
         var remainingDelay = Math.Max(0, delayMilliseconds);
         if (remainingDelay == 0)
@@ -972,7 +1005,7 @@ public sealed partial class WidgetWindow : Window
             UpdateVisualState();
 
             var step = Math.Min(1000, remainingDelay);
-            await Task.Delay(step);
+            await Task.Delay(step, cancellationToken);
             remainingDelay -= step;
 
             if (remaining.HasValue)
@@ -1381,13 +1414,13 @@ public sealed partial class WidgetWindow : Window
             bounds.Left + (int)(bounds.Width * VideoSpeedOnePointFiveRelativeX),
             bounds.Top + (int)(bounds.Height * VideoSpeedOnePointFiveRelativeY));
 
-    private async Task<bool> IsVideoSettingsMenuOpenAsync()
+    private async Task<bool> IsVideoSettingsMenuOpenAsync(CancellationToken cancellationToken = default)
     {
         CaptureLayoutResult? snapshot = null;
 
         try
         {
-            snapshot = await CaptureCurrentLayoutUnderCursorAsync(showCaptureStatus: false, showOcrStatus: false);
+            snapshot = await CaptureCurrentLayoutUnderCursorAsync(showCaptureStatus: false, showOcrStatus: false, cancellationToken: cancellationToken);
             return TryFindMatchingRegion(
                 snapshot.Layout,
                 ["speed", "playback speed", "quality", "audio", "captions", "subtitles"],
@@ -1526,6 +1559,26 @@ public sealed partial class WidgetWindow : Window
         }
     }
 
+    private void OnOpenMainWindowMenuItemClicked(object sender, RoutedEventArgs e)
+    {
+        App.CurrentApp.ShowMainWindow();
+    }
+
+    private void OnForceStopMenuItemClicked(object sender, RoutedEventArgs e)
+    {
+        if (!ViewModel.IsBusy)
+        {
+            return;
+        }
+
+        CancelActiveAnswer();
+    }
+
+    private void OnHideWidgetMenuItemClicked(object sender, RoutedEventArgs e)
+    {
+        this.HideWindow();
+    }
+
     private async void OnAnswerButtonClicked(object sender, RoutedEventArgs e)
     {
         if (ViewModel.IsBusy)
@@ -1592,50 +1645,50 @@ public sealed partial class WidgetWindow : Window
         UpdateActionButtonReveal(showActionButton);
     }
 
-    private async Task<ScreenCaptureResult> CaptureDisplayUnderCursorWithStatusAsync(bool showStatus = true)
+    private async Task<ScreenCaptureResult> CaptureDisplayUnderCursorWithStatusAsync(bool showStatus = true, CancellationToken cancellationToken = default)
     {
         this.HideWindow();
-        await Task.Delay(120);
-        var capture = await screenCaptureService.CaptureDisplayUnderCursorAsync();
+        await Task.Delay(120, cancellationToken);
+        var capture = await screenCaptureService.CaptureDisplayUnderCursorAsync(cancellationToken);
         this.ShowWin32Window(false);
         BringToFront();
         if (showStatus)
         {
             ViewModel.SetScreenshotTaken();
             UpdateVisualState();
-            await Task.Delay(180);
+            await Task.Delay(180, cancellationToken);
         }
 
         return capture;
     }
 
-    private async Task<ScreenCaptureResult> CaptureAtPointWithStatusAsync(int x, int y, bool clickCenter, bool showStatus = true)
+    private async Task<ScreenCaptureResult> CaptureAtPointWithStatusAsync(int x, int y, bool clickCenter, bool showStatus = true, CancellationToken cancellationToken = default)
     {
         this.HideWindow();
-        await Task.Delay(120);
-        var capture = await CaptureAtPointAsync(x, y, clickCenter);
+        await Task.Delay(120, cancellationToken);
+        var capture = await CaptureAtPointAsync(x, y, clickCenter, cancellationToken: cancellationToken);
         this.ShowWin32Window(false);
         BringToFront();
         if (showStatus)
         {
             ViewModel.SetScreenshotTaken();
             UpdateVisualState();
-            await Task.Delay(180);
+            await Task.Delay(180, cancellationToken);
         }
 
         return capture;
     }
 
-    private async Task<OcrLayoutResult> ExtractLayoutWithStatusAsync(string imagePath, bool showStatus = true)
+    private async Task<OcrLayoutResult> ExtractLayoutWithStatusAsync(string imagePath, bool showStatus = true, CancellationToken cancellationToken = default)
     {
         if (showStatus)
         {
             ViewModel.SetExtractingText();
             UpdateVisualState();
-            await Task.Delay(120);
+            await Task.Delay(120, cancellationToken);
         }
 
-        return await ocrService.ExtractLayoutAsync(imagePath);
+        return await ocrService.ExtractLayoutAsync(imagePath, cancellationToken);
     }
 
     private void UpdateThinkingAnimation(bool isThinking)

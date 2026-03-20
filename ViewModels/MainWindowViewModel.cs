@@ -336,6 +336,22 @@ public sealed class MainWindowViewModel : ObservableObject
         }
     }
 
+    public bool SaveCurrentModelOnRestart
+    {
+        get => appState.SaveCurrentModelOnRestart;
+        set
+        {
+            if (appState.SaveCurrentModelOnRestart == value)
+            {
+                return;
+            }
+
+            appState.SaveCurrentModelOnRestart = value;
+            OnPropertyChanged();
+            _ = appState.PersistAsync(settingsStore);
+        }
+    }
+
     public Visibility ShowAgentLoopVisibility => AgentModeEnabled ? Visibility.Visible : Visibility.Collapsed;
 
     private string CurrentProviderId => ProviderIds.Normalize(SelectedProviderId);
@@ -482,6 +498,7 @@ public sealed class MainWindowViewModel : ObservableObject
         OnPropertyChanged(nameof(StartWithWidget));
         OnPropertyChanged(nameof(AgentModeEnabled));
         OnPropertyChanged(nameof(AgentLoopEnabled));
+        OnPropertyChanged(nameof(SaveCurrentModelOnRestart));
         OnPropertyChanged(nameof(ShowAgentLoopVisibility));
         OnPropertyChanged(nameof(TerminalTranscript));
         OnPropertyChanged(nameof(CanRunGuidedSetup));

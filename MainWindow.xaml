@@ -171,6 +171,10 @@
                                 IsOn="{x:Bind ViewModel.StartWithWidget, Mode=TwoWay}" />
 
                             <ToggleSwitch
+                                Header="Save current model on restart"
+                                IsOn="{x:Bind ViewModel.SaveCurrentModelOnRestart, Mode=TwoWay}" />
+
+                            <ToggleSwitch
                                 Header="Agent mode"
                                 IsOn="{x:Bind ViewModel.AgentModeEnabled, Mode=TwoWay}" />
 
@@ -342,5 +346,4 @@
         </Grid>
     </Grid>
 </Window>
-
 

@@ -60,6 +60,21 @@ public sealed class AppState : ObservableObject
         }
     }
 
+    public bool SaveCurrentModelOnRestart
+    {
+        get => settings.SaveCurrentModelOnRestart;
+        set
+        {
+            if (settings.SaveCurrentModelOnRestart == value)
+            {
+                return;
+            }
+
+            settings.SaveCurrentModelOnRestart = value;
+            OnPropertyChanged();
+        }
+    }
+
     public WidgetBounds WidgetBounds => settings.WidgetBounds;
 
     public ProviderPreflightResult Preflight
@@ -150,6 +165,7 @@ public sealed class AppState : ObservableObject
         OnPropertyChanged(nameof(StartWithWidget));
         OnPropertyChanged(nameof(AgentModeEnabled));
         OnPropertyChanged(nameof(AgentLoopEnabled));
+        OnPropertyChanged(nameof(SaveCurrentModelOnRestart));
     }
 
     public async Task SetSelectedProviderAsync(string providerId, IProviderRuntimeRegistry providerRegistry, CancellationToken cancellationToken = default)
@@ -199,6 +215,13 @@ public sealed class AppState : ObservableObject
         }
 
         OnPropertyChanged(nameof(RecentModels));
+    }
+
+    public void CancelAnswer()
+    {
+        IsAnswering = false;
+        LastAnswerSummary = "Stopped.";
+        LastAnswerDetail = "Stopped.";
     }
 
     public void SetSelectedModel(string value)
@@ -274,16 +297,20 @@ public sealed class AppState : ObservableObject
     {
         var selection = GetSelection(providerRuntime.ProviderId);
         var configuredDefaults = await providerRuntime.ReadConfiguredDefaultsAsync(cancellationToken);
-        var initialModel = FirstNonEmpty(
-            selection.SelectedModel,
-            selection.LastSuccessfulModel,
-            configuredDefaults.SelectedModel,
-            providerRuntime.ProviderId == ProviderIds.OpenAiCodex ? "gpt-5.4" : "ollama/gemma3:4b");
+        var initialModel = SaveCurrentModelOnRestart
+            ? FirstNonEmpty(
+                selection.SelectedModel,
+                selection.LastSuccessfulModel,
+                configuredDefaults.SelectedModel,
+                providerRuntime.ProviderId == ProviderIds.OpenAiCodex ? "gpt-5.4-mini" : "ollama/gemma3:4b")
+            : FirstNonEmpty(
+                configuredDefaults.SelectedModel,
+                providerRuntime.ProviderId == ProviderIds.OpenAiCodex ? "gpt-5.4-mini" : "ollama/gemma3:4b");
         var initialReasoningEffort = FirstNonEmpty(
             selection.SelectedReasoningEffort,
             selection.LastSuccessfulReasoningEffort,
             configuredDefaults.SelectedReasoningEffort,
-            providerRuntime.ProviderId == ProviderIds.OpenAiCodex ? "low" : string.Empty);
+            providerRuntime.ProviderId == ProviderIds.OpenAiCodex ? "medium" : string.Empty);
 
         SelectedModel = initialModel;
         SelectedReasoningEffort = initialReasoningEffort;

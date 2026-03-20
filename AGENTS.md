@@ -5,6 +5,9 @@
 - Purpose: wrap a local Codex CLI install with a small widget UI and main settings window.
 - Packaging model: unpackaged (`<WindowsPackageType>None</WindowsPackageType>`).
 
+## macOS
+- If you are working on the macOS version under `macOS/`, also read [`macOS/AGENTS.md`](macOS/AGENTS.md) before making changes there.
+
 ## Important Paths
 - `App.xaml` / `App.xaml.cs`: app startup and service wiring.
 - `MainWindow.xaml` / `WidgetWindow.xaml`: main app surfaces.
